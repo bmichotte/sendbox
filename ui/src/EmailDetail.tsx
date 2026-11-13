@@ -112,7 +112,8 @@ function TabBody({ tab, email }: { tab: Tab; email: EmailDetail }) {
       }
       return (
         // No allow-scripts: the Email's scripts never run, and the frame is cut off from the
-        // app. Its inline images are already embedded as data: URIs by the core.
+        // app. Its inline images are already embedded as data: URIs by the core; remote images,
+        // stylesheets and fonts load as recipients would see them (the app's CSP allows them).
         <iframe
           title="HTML version"
           sandbox=""

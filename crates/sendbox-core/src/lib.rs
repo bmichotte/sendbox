@@ -1,25 +1,46 @@
-//! Sendbox core: Captures Emails over SMTP into a single persistent Inbox.
+//! Sendbox core: Captures Emails over SMTP into a single persistent Inbox, and
+//! lets agents list and read them over MCP.
 //!
 //! The core has no Tauri dependency. A shell starts it from a [`Config`] with
 //! [`start`] and drives it through the returned [`CoreHandle`].
 
 mod inbox;
+mod mcp;
 mod smtp;
+mod view;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use inbox::Inbox;
 use tokio::sync::broadcast;
 
-/// What a core needs to start.
+pub use view::{Attachment, EmailView, Header};
+
+/// What a core needs to start. [`Config::new`] gives the defaults.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Port of the SMTP listener on `127.0.0.1`; 0 binds an ephemeral port.
     pub smtp_port: u16,
+    /// Port of the MCP endpoint (`/mcp`) on `127.0.0.1`; 0 binds an ephemeral port.
+    pub mcp_port: u16,
+    /// Whether an Email an agent reads over MCP becomes read.
+    pub mcp_marks_read: bool,
     /// Directory holding the Inbox database; created if missing.
     pub data_dir: PathBuf,
+}
+
+impl Config {
+    /// The defaults: SMTP on 1025, MCP on 1026, MCP reads mark Emails as read.
+    pub fn new(data_dir: impl AsRef<Path>) -> Self {
+        Self {
+            smtp_port: 1025,
+            mcp_port: 1026,
+            mcp_marks_read: true,
+            data_dir: data_dir.as_ref().to_path_buf(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +65,8 @@ pub struct EmailSummary {
     pub from: Option<String>,
     /// The addresses in the `To` header, in order.
     pub to: Vec<String>,
+    /// The addresses in the `Cc` header, in order.
+    pub cc: Vec<String>,
     /// The SMTP `MAIL FROM` address; empty for a null sender (`MAIL FROM:<>`).
     pub envelope_sender: String,
     /// The SMTP `RCPT TO` addresses, in the order given (includes Bcc).
@@ -52,6 +75,8 @@ pub struct EmailSummary {
     pub subject: Option<String>,
     /// Size of the raw source in bytes.
     pub size: u64,
+    /// Whether the Email has been read; Unread otherwise.
+    pub read: bool,
 }
 
 impl EmailSummary {
@@ -64,6 +89,48 @@ impl EmailSummary {
     }
 }
 
+/// Which Emails to list. The default matches every Email; each field set
+/// narrows it further. Text filters are case-insensitive substrings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EmailFilter {
+    /// Part of the `From` header address or of the envelope sender.
+    pub from: Option<String>,
+    /// Part of a recipient address: `To`, `Cc` or envelope (so Bcc too).
+    pub to: Option<String>,
+    /// Part of the subject.
+    pub subject: Option<String>,
+    /// Only Emails Captured at or after this time.
+    pub since: Option<SystemTime>,
+    /// Only Unread Emails.
+    pub unread_only: bool,
+}
+
+impl EmailFilter {
+    /// Whether `email` is one of the Emails this filter lists.
+    pub(crate) fn matches(&self, email: &EmailSummary) -> bool {
+        let senders = [email.from.as_deref(), Some(&email.envelope_sender)];
+        let recipients = [&email.to, &email.cc, &email.envelope_recipients];
+        contains_any(&self.from, senders.into_iter().flatten())
+            && contains_any(
+                &self.to,
+                recipients.into_iter().flatten().map(String::as_str),
+            )
+            && contains_any(&self.subject, email.subject.as_deref())
+            && self.since.is_none_or(|since| email.received_at >= since)
+            && !(self.unread_only && email.read)
+    }
+}
+
+/// True if there is no `needle`, or if one of `haystacks` contains it,
+/// ignoring case (in any script, not only ASCII).
+fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item = &'a str>) -> bool {
+    let Some(needle) = needle else { return true };
+    let needle = needle.to_lowercase();
+    haystacks
+        .into_iter()
+        .any(|haystack| haystack.to_lowercase().contains(&needle))
+}
+
 /// Something that happened in the core, broadcast live to subscribers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -73,18 +140,28 @@ pub enum CoreEvent {
 }
 
 /// A running core. Dropping it without [`CoreHandle::shutdown`] leaves the
-/// listener running until the async runtime stops.
+/// listeners running until the async runtime stops.
 pub struct CoreHandle {
     inbox: Inbox,
     smtp: smtp::Listener,
+    mcp: mcp::Listener,
 }
 
 /// Starts a core: opens the Inbox in the data directory, binds the SMTP
-/// listener and begins Capturing.
+/// listener and the MCP endpoint, and begins Capturing.
 pub async fn start(config: Config) -> Result<CoreHandle, Error> {
     let inbox = Inbox::open(&config.data_dir).await?;
     let smtp = smtp::Listener::bind(config.smtp_port, inbox.clone()).await?;
-    Ok(CoreHandle { inbox, smtp })
+    let mcp = match mcp::Listener::bind(config.mcp_port, inbox.clone(), config.mcp_marks_read).await
+    {
+        Ok(mcp) => mcp,
+        Err(error) => {
+            // Leave nothing listening behind a core that failed to start.
+            smtp.shutdown().await;
+            return Err(error.into());
+        }
+    };
+    Ok(CoreHandle { inbox, smtp, mcp })
 }
 
 impl CoreHandle {
@@ -93,9 +170,30 @@ impl CoreHandle {
         self.smtp.port()
     }
 
-    /// Every Email in the Inbox, newest first.
-    pub async fn list_emails(&self) -> Result<Vec<EmailSummary>, Error> {
-        self.inbox.list().await
+    /// The port the MCP endpoint is actually bound to.
+    pub fn mcp_port(&self) -> u16 {
+        self.mcp.port()
+    }
+
+    /// The Emails `filter` matches, newest first, at most `limit` of them.
+    pub async fn list_emails(
+        &self,
+        filter: &EmailFilter,
+        limit: Option<usize>,
+    ) -> Result<Vec<EmailSummary>, Error> {
+        self.inbox.list(filter.clone(), limit).await
+    }
+
+    /// One Email as read: its content parsed from the raw source, or `None`
+    /// if no Email has this id. Reading it does not mark it read.
+    pub async fn email(&self, id: EmailId) -> Result<Option<EmailView>, Error> {
+        self.inbox.view(id).await
+    }
+
+    /// Marks one Email read, as when the user opens it. Nothing happens if no
+    /// Email has this id.
+    pub async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
+        self.inbox.mark_read(id).await
     }
 
     /// Live events from now on. A subscriber that falls more than a few
@@ -110,9 +208,10 @@ impl CoreHandle {
         self.inbox.raw_source(id).await
     }
 
-    /// Stops listening and closes open SMTP sessions. When this returns, the
-    /// SMTP port is free.
+    /// Stops listening and closes open SMTP sessions and MCP connections.
+    /// When this returns, both ports are free.
     pub async fn shutdown(self) {
         self.smtp.shutdown().await;
+        self.mcp.shutdown().await;
     }
 }

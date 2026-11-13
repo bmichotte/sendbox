@@ -3,13 +3,11 @@
 
 use std::time::UNIX_EPOCH;
 
-use sendbox_core::{Config, CoreEvent, CoreHandle, EmailSummary};
+use sendbox_core::{Config, CoreEvent, CoreHandle, EmailFilter, EmailSummary};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast::error::RecvError;
 
-/// The SMTP port developers point their apps at.
-const SMTP_PORT: u16 = 1025;
 /// Tells the UI to list the Inbox again.
 const INBOX_CHANGED: &str = "inbox-changed";
 
@@ -28,13 +26,11 @@ impl Core {
     }
 }
 
-/// Starts the core with the Inbox in the platform local data directory. If
-/// it cannot start, the app still runs and the window shows why.
+/// Starts the core with its defaults (SMTP on 1025, MCP on 1026) and the
+/// Inbox in the platform local data directory. If it cannot start, the app
+/// still runs and the window shows why.
 pub fn start(app: &AppHandle) -> tauri::Result<()> {
-    let config = Config {
-        smtp_port: SMTP_PORT,
-        data_dir: app.path().app_local_data_dir()?,
-    };
+    let config = Config::new(app.path().app_local_data_dir()?);
     let core = match tauri::async_runtime::block_on(sendbox_core::start(config)) {
         Ok(handle) => {
             forward_events(app.clone(), &handle);
@@ -94,7 +90,7 @@ impl From<EmailSummary> for EmailRow {
 pub async fn list_emails(core: State<'_, Core>) -> Result<Vec<EmailRow>, String> {
     let emails = core
         .handle()?
-        .list_emails()
+        .list_emails(&EmailFilter::default(), None)
         .await
         .map_err(|error| error.to_string())?;
     Ok(emails.into_iter().map(EmailRow::from).collect())

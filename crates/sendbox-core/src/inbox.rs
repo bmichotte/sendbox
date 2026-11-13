@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use tokio::sync::broadcast;
 
-use crate::{CoreEvent, EmailId, EmailSummary, Error};
+use crate::{CoreEvent, EmailFilter, EmailId, EmailSummary, EmailView, Error};
 
 const DATABASE_FILE: &str = "inbox.sqlite3";
 /// Events a slow subscriber may fall behind by before it starts missing some.
@@ -31,7 +31,16 @@ const MIGRATIONS: &[&str] = &[
     // 2: header From and To for the Inbox list; Emails Captured earlier have none.
     "ALTER TABLE emails ADD COLUMN from_address TEXT;
      ALTER TABLE emails ADD COLUMN to_addresses TEXT NOT NULL DEFAULT '';",
+    // 3: read state, and header Cc for the `to` filter. Emails Captured
+    // earlier are Unread and have no Cc (their envelope still has every
+    // recipient).
+    "ALTER TABLE emails ADD COLUMN read INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE emails ADD COLUMN cc_addresses TEXT NOT NULL DEFAULT '';",
 ];
+
+/// The columns [`summary_from_row`] reads, in order.
+const SUMMARY_COLUMNS: &str = "id, received_at_ns, envelope_sender, envelope_recipients,
+     from_address, to_addresses, cc_addresses, subject, size, read";
 
 /// The SMTP envelope of one Email: who the client said it was from and to.
 pub(crate) struct Envelope {
@@ -79,14 +88,16 @@ impl Inbox {
             .with_db(move |db| {
                 db.execute(
                     "INSERT INTO emails (received_at_ns, envelope_sender, envelope_recipients,
-                                     from_address, to_addresses, subject, size, raw_source)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                                     from_address, to_addresses, cc_addresses, subject,
+                                     size, raw_source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         to_unix_nanos(received_at),
                         envelope.sender,
                         encode_addresses(&envelope.recipients),
                         headers.from,
                         encode_addresses(&headers.to),
+                        encode_addresses(&headers.cc),
                         headers.subject,
                         raw_source.len() as i64,
                         raw_source,
@@ -97,10 +108,12 @@ impl Inbox {
                     received_at,
                     from: headers.from,
                     to: headers.to,
+                    cc: headers.cc,
                     envelope_sender: envelope.sender,
                     envelope_recipients: envelope.recipients,
                     subject: headers.subject,
                     size: raw_source.len() as u64,
+                    read: false,
                 })
             })
             .await?;
@@ -109,20 +122,62 @@ impl Inbox {
         Ok(email)
     }
 
-    /// Every Email, newest first.
-    pub(crate) async fn list(&self) -> Result<Vec<EmailSummary>, Error> {
-        self.with_db(|db| {
-            let mut statement = db.prepare(
-                "SELECT id, received_at_ns, envelope_sender, envelope_recipients,
-                        from_address, to_addresses, subject, size
-                 FROM emails ORDER BY id DESC",
-            )?;
-            let emails = statement
-                .query_map([], summary_from_row)?
-                .collect::<Result<_, _>>()?;
+    /// The Emails `filter` matches, newest first, at most `limit` of them.
+    ///
+    /// Filtering happens here rather than in SQL: SQLite only folds ASCII
+    /// case, and the Inbox is small (bounded by the Retention limit).
+    pub(crate) async fn list(
+        &self,
+        filter: EmailFilter,
+        limit: Option<usize>,
+    ) -> Result<Vec<EmailSummary>, Error> {
+        self.with_db(move |db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id DESC"
+            ))?;
+            let mut emails = Vec::new();
+            for email in statement.query_map([], summary_from_row)? {
+                let email = email?;
+                if limit.is_some_and(|limit| emails.len() >= limit) {
+                    break;
+                }
+                if filter.matches(&email) {
+                    emails.push(email);
+                }
+            }
             Ok(emails)
         })
         .await
+    }
+
+    /// Marks one Email read. Nothing happens if no Email has this id.
+    pub(crate) async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
+        self.with_db(move |db| {
+            db.execute("UPDATE emails SET read = 1 WHERE id = ?1", [id.0])?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// The view of one Email, or `None` if no Email has this id.
+    pub(crate) async fn view(&self, id: EmailId) -> Result<Option<EmailView>, Error> {
+        let email = self
+            .with_db(move |db| {
+                Ok(db
+                    .query_row(
+                        &format!("SELECT {SUMMARY_COLUMNS}, raw_source FROM emails WHERE id = ?1"),
+                        [id.0],
+                        |row| Ok((summary_from_row(row)?, row.get::<_, Vec<u8>>(10)?)),
+                    )
+                    .optional()?)
+            })
+            .await?;
+        let Some((summary, raw_source)) = email else {
+            return Ok(None);
+        };
+        // Parsing a large Email takes a while: keep it off the async workers
+        // and outside the database lock.
+        blocking(move || Ok(Some(EmailView::parse(summary, &raw_source)))).await
     }
 
     pub(crate) async fn raw_source(&self, id: EmailId) -> Result<Option<Vec<u8>>, Error> {
@@ -168,8 +223,10 @@ fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {
         envelope_recipients: decode_addresses(&row.get::<_, String>(3)?),
         from: row.get(4)?,
         to: decode_addresses(&row.get::<_, String>(5)?),
-        subject: row.get(6)?,
-        size: row.get::<_, i64>(7)? as u64,
+        cc: decode_addresses(&row.get::<_, String>(6)?),
+        subject: row.get(7)?,
+        size: row.get::<_, i64>(8)? as u64,
+        read: row.get(9)?,
     })
 }
 
@@ -178,6 +235,7 @@ fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {
 struct SummaryHeaders {
     from: Option<String>,
     to: Vec<String>,
+    cc: Vec<String>,
     subject: Option<String>,
 }
 
@@ -192,18 +250,22 @@ impl SummaryHeaders {
                 .and_then(|from| from.first())
                 .and_then(|mailbox| mailbox.address())
                 .map(str::to_owned),
-            to: message
-                .to()
-                .map(|to| {
-                    to.mailboxes()
-                        .filter_map(|mailbox| mailbox.address())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            to: addresses(message.to()),
+            cc: addresses(message.cc()),
             subject: message.subject().map(str::to_owned),
         }
     }
+}
+
+/// Every mailbox address in an address header, in order (names dropped).
+fn addresses(list: Option<mail_parser::AddressList<'_>>) -> Vec<String> {
+    list.map(|list| {
+        list.mailboxes()
+            .filter_map(|mailbox| mailbox.address())
+            .map(str::to_owned)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 async fn blocking<T: Send + 'static>(

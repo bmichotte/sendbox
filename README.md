@@ -36,6 +36,16 @@ Point your app's SMTP settings at host `127.0.0.1`, port `1025`, without TLS. An
 nodemailer.createTransport({ host: "127.0.0.1", port: 1025 });
 ```
 
+### Letting an agent read your Emails
+
+Sendbox serves an MCP endpoint at `http://127.0.0.1:1026/mcp` while it runs, so a coding agent can find the Emails your app sent and follow their links (to verify a sign-up, say). With Claude Code:
+
+```sh
+claude mcp add --transport http sendbox http://127.0.0.1:1026/mcp
+```
+
+The agent can list Emails (`list_emails`, filtered by sender, recipient, subject, time or Unread) and read one (`get_email`: text, HTML, headers, envelope, links and attachment names; never the attachments themselves). Reading an Email marks it read. The endpoint only listens on this machine, and refuses requests that websites open in your browser try to send it (pages served from `localhost` excepted).
+
 ## Development
 
 Requirements: Rust (stable) and Node 24.

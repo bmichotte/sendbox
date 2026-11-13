@@ -3,16 +3,25 @@ name = "sendbox-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Sendbox core: SMTP Capture and Inbox storage, independent of Tauri."
+description = "Sendbox core: SMTP Capture, Inbox storage and the MCP server, independent of Tauri."
 
 [dependencies]
+# rmcp and mail-parser change their APIs between majors: keep each on one major.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
 mail-parser = "1.0"
+regex = "1"
+rmcp = { version = "3.10", features = ["transport-streamable-http-server"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
 smtp-proto = "0.2"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "macros", "time"] }
+tokio-util = "0.7"
 
 [dev-dependencies]
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1"] }
+rmcp = { version = "3.10", features = ["client", "transport-streamable-http-client-reqwest"] }
+serde_json = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }

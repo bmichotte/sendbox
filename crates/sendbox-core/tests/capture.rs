@@ -21,7 +21,7 @@ async fn an_email_sent_with_lettre_is_captured_into_the_inbox() {
 
     send_with_lettre(core.smtp_port(), message).await;
 
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     let email = &emails[0];
     assert_eq!(email.envelope_sender, "app@acme.test");
@@ -49,7 +49,7 @@ async fn the_raw_source_is_stored_byte_for_byte_with_dots_unstuffed() {
         .await;
 
     assert_eq!(reply.code, 250);
-    let id = core.list_emails().await.unwrap()[0].id;
+    let id = core.inbox().await[0].id;
     let raw_source = core.raw_source(id).await.unwrap().expect("Email exists");
     assert_eq!(
         raw_source,
@@ -77,7 +77,7 @@ async fn every_envelope_recipient_is_kept_including_bcc() {
 
     send_with_lettre(core.smtp_port(), message).await;
 
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     let mut recipients = emails[0].envelope_recipients.clone();
     recipients.sort();
     assert_eq!(
@@ -107,7 +107,7 @@ async fn several_emails_on_one_connection_are_each_captured_newest_first() {
         .await;
 
     assert_eq!((first.code, second.code), (250, 250));
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     let listed: Vec<_> = emails
         .iter()
         .map(|email| {
@@ -153,7 +153,7 @@ async fn rset_abandons_the_transaction_in_progress() {
         )
         .await;
     assert_eq!(reply.code, 250);
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     assert_eq!(emails[0].envelope_sender, "kept@acme.test");
     assert_eq!(emails[0].envelope_recipients, ["kept@example.com"]);
@@ -181,7 +181,7 @@ async fn a_helo_session_with_noop_captures_then_quits() {
         smtp.is_closed().await,
         "the server closes the connection after QUIT"
     );
-    assert_eq!(core.list_emails().await.unwrap().len(), 1);
+    assert_eq!(core.inbox().await.len(), 1);
 }
 
 #[tokio::test]
@@ -211,7 +211,7 @@ async fn each_capture_emits_an_email_captured_event() {
         .map(|email| email.subject.as_deref())
         .collect();
     assert_eq!(subjects, [Some("First"), Some("Second")]);
-    let mut listed = core.list_emails().await.unwrap();
+    let mut listed = core.inbox().await;
     listed.reverse();
     assert_eq!(captured, listed, "events carry the Emails as listed");
 }
@@ -233,7 +233,7 @@ async fn the_list_shows_the_from_and_to_header_addresses_apart_from_the_envelope
     )
     .await;
 
-    let email = &core.list_emails().await.unwrap()[0];
+    let email = &core.inbox().await[0];
     assert_eq!(email.from.as_deref(), Some("shop@acme.test"));
     assert_eq!(email.to, ["alice@example.com", "bob@example.com"]);
     assert_eq!(email.envelope_sender, "bounces@mailer.test");
@@ -257,7 +257,7 @@ async fn the_sender_is_the_from_header_address_else_the_envelope_sender() {
         assert_eq!(reply.code, 250);
     }
 
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     let senders: Vec<_> = emails
         .iter()
         .map(|email| (email.subject.as_deref().unwrap(), email.sender()))

@@ -1,10 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { type Attachment, type EmailDetail, getEmail, saveAttachment } from "./inbox";
-
-type DetailState =
-  | { status: "loading" }
-  | { status: "ready"; email: EmailDetail }
-  | { status: "failed"; reason: string };
+import type { Loaded } from "./live";
 
 type Tab = "html" | "text" | "headers" | "raw";
 
@@ -30,7 +26,7 @@ export function EmailDetailPane({ id, onClose }: { id: number; onClose: () => vo
     );
   }
 
-  const { email } = detail;
+  const email = detail.value;
   // Emails without HTML open on the Text tab.
   const tab = chosenTab ?? (email.html !== null ? "html" : "text");
   const receivedAt = new Date(email.receivedAt);
@@ -210,14 +206,14 @@ function Missing({ children }: { children: ReactNode }) {
 }
 
 /** One Email in full, fetched again when `id` changes. */
-function useEmailDetail(id: number): DetailState {
-  const [detail, setDetail] = useState<DetailState>({ status: "loading" });
+function useEmailDetail(id: number): Loaded<EmailDetail> {
+  const [detail, setDetail] = useState<Loaded<EmailDetail>>({ status: "loading" });
 
   useEffect(() => {
     let active = true;
     setDetail({ status: "loading" });
     getEmail(id).then(
-      (email) => active && setDetail({ status: "ready", email }),
+      (email) => active && setDetail({ status: "ready", value: email }),
       (reason: unknown) => active && setDetail({ status: "failed", reason: String(reason) }),
     );
     return () => {

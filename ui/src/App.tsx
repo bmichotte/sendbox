@@ -11,12 +11,7 @@ import {
   type Tabs,
 } from "./inbox";
 import { useListeners } from "./listeners";
-
-/** Something loaded from the shell, and loaded again whenever the Inbox changes. */
-type Live<T> =
-  | { status: "loading" }
-  | { status: "ready"; value: T }
-  | { status: "failed"; reason: string };
+import { type Loaded, stopListening } from "./live";
 
 export function App() {
   const tabs = useLive(listTabs, "tabs");
@@ -218,7 +213,7 @@ function InboxBody({
   onOpen,
   onDelete,
 }: {
-  emails: Live<EmailRow[]>;
+  emails: Loaded<EmailRow[]>;
   /** Whether the whole Inbox is empty, not only the list a tab or a search narrows. */
   inboxIsEmpty: boolean;
   port: number | null;
@@ -264,32 +259,29 @@ function InboxBody({
  * What `load` answers, loaded again whenever the shell says the Inbox changed, and whenever `key`
  * changes: `key` names what `load` loads, so a new key means a new `load`.
  */
-function useLive<T>(load: () => Promise<T>, key: string): Live<T> {
-  const [live, setLive] = useState<Live<T>>({ status: "loading" });
+function useLive<T>(load: () => Promise<T>, key: string): Loaded<T> {
+  const [live, setLive] = useState<Loaded<T>>({ status: "loading" });
 
   // `key` stands for `load`, a new function on every render.
   useEffect(() => {
     let active = true;
     let latest = 0;
-    const failed = (reason: unknown): Live<T> => ({ status: "failed", reason: String(reason) });
+    const failed = (reason: unknown): Loaded<T> => ({ status: "failed", reason: String(reason) });
     const refresh = () => {
       const request = ++latest;
       // Only the newest answer counts: an older, slower one would be stale.
-      const settle = (next: Live<T>) => active && request === latest && setLive(next);
+      const settle = (next: Loaded<T>) => active && request === latest && setLive(next);
       load().then(
         (value) => settle({ status: "ready", value }),
         (reason: unknown) => settle(failed(reason)),
       );
     };
-    const stopListening = onInboxChanged(refresh);
+    const listening = onInboxChanged(refresh);
     // Load once listening, so that no Capture slips in between.
-    stopListening.then(refresh, (reason: unknown) => active && setLive(failed(reason)));
+    listening.then(refresh, (reason: unknown) => active && setLive(failed(reason)));
     return () => {
       active = false;
-      stopListening.then(
-        (stop) => stop(),
-        () => {},
-      );
+      stopListening(listening);
     };
   }, [key]);
 

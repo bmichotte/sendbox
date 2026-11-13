@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 import { type ListenerStatus, useListeners } from "./listeners";
+import { stopListening } from "./live";
 import {
   getSettings,
   launchAtLogin,
@@ -25,13 +26,10 @@ export function SettingsWindow() {
     refreshAtLogin();
     // The window lives on, hidden, between uses; meanwhile the user may
     // change launch at login in the system settings.
-    const stopListening = onWindowFocused(refreshAtLogin);
+    const listening = onWindowFocused(refreshAtLogin);
     return () => {
       active = false;
-      stopListening.then(
-        (stop) => stop(),
-        () => {},
-      );
+      stopListening(listening);
     };
   }, []);
 

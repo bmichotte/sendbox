@@ -1,6 +1,8 @@
 //! The Inbox: every Captured Email, kept in a single SQLite file.
 
+use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -52,22 +54,33 @@ pub(crate) struct Envelope {
 pub(crate) struct Inbox {
     db: Arc<Mutex<Connection>>,
     events: broadcast::Sender<CoreEvent>,
+    /// The Retention limit, only read or changed while holding the database
+    /// lock, so that each prune sees the latest limit.
+    retention_limit: Arc<AtomicUsize>,
 }
 
 impl Inbox {
-    pub(crate) async fn open(data_dir: &Path) -> Result<Self, Error> {
+    /// Opens the Inbox in `data_dir`, creating it if needed, and prunes it
+    /// to `retention_limit` (which may have been lowered since it was last
+    /// open).
+    pub(crate) async fn open(
+        data_dir: &Path,
+        retention_limit: NonZeroUsize,
+    ) -> Result<Self, Error> {
         let path = data_dir.join(DATABASE_FILE);
         let data_dir = data_dir.to_path_buf();
         let db = blocking(move || -> Result<Connection, Error> {
             std::fs::create_dir_all(&data_dir)?;
             let mut db = Connection::open(path)?;
             migrate(&mut db)?;
+            prune(&db, retention_limit.get())?;
             Ok(db)
         })
         .await?;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
             events: broadcast::channel(EVENT_BACKLOG).0,
+            retention_limit: Arc::new(AtomicUsize::new(retention_limit.get())),
         })
     }
 
@@ -75,7 +88,8 @@ impl Inbox {
         self.events.subscribe()
     }
 
-    /// Keeps `raw_source` exactly as received, with its envelope, and emits
+    /// Keeps `raw_source` exactly as received, with its envelope, prunes the
+    /// oldest Emails beyond the Retention limit, and emits
     /// [`CoreEvent::EmailCaptured`].
     pub(crate) async fn capture(
         &self,
@@ -84,9 +98,13 @@ impl Inbox {
     ) -> Result<EmailSummary, Error> {
         let received_at = SystemTime::now();
         let headers = SummaryHeaders::parse(&raw_source);
+        let retention_limit = Arc::clone(&self.retention_limit);
         let email = self
             .with_db(move |db| {
-                db.execute(
+                // Kept and pruned together, or neither: a client told the
+                // Capture failed may send the Email again.
+                let transaction = db.unchecked_transaction()?;
+                transaction.execute(
                     "INSERT INTO emails (received_at_ns, envelope_sender, envelope_recipients,
                                      from_address, to_addresses, cc_addresses, subject,
                                      size, raw_source)
@@ -103,8 +121,11 @@ impl Inbox {
                         raw_source,
                     ],
                 )?;
+                let id = EmailId(transaction.last_insert_rowid());
+                prune(&transaction, retention_limit.load(Ordering::Relaxed))?;
+                transaction.commit()?;
                 Ok(EmailSummary {
-                    id: EmailId(db.last_insert_rowid()),
+                    id,
                     received_at,
                     from: headers.from,
                     to: headers.to,
@@ -120,6 +141,22 @@ impl Inbox {
         // No subscriber is not an error: nobody is watching yet.
         let _ = self.events.send(CoreEvent::EmailCaptured(email.clone()));
         Ok(email)
+    }
+
+    /// Keeps at most `limit` Emails from now on, pruning the oldest beyond
+    /// it at once.
+    pub(crate) async fn set_retention_limit(&self, limit: NonZeroUsize) -> Result<(), Error> {
+        let retention_limit = Arc::clone(&self.retention_limit);
+        let pruned = self
+            .with_db(move |db| {
+                retention_limit.store(limit.get(), Ordering::Relaxed);
+                prune(db, limit.get())
+            })
+            .await?;
+        if pruned > 0 {
+            let _ = self.events.send(CoreEvent::InboxChanged);
+        }
+        Ok(())
     }
 
     /// The Emails `filter` matches, newest first, at most `limit` of them.
@@ -201,6 +238,17 @@ impl Inbox {
         let db = Arc::clone(&self.db);
         blocking(move || f(&db.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))).await
     }
+}
+
+/// Deletes the oldest Emails, read or not, so that at most `limit` remain.
+/// Ids grow with each Capture, so the oldest have the lowest ids.
+fn prune(db: &Connection, limit: usize) -> Result<usize, Error> {
+    // With `limit` Emails or fewer, the subquery is NULL and nothing matches.
+    Ok(db.execute(
+        "DELETE FROM emails
+         WHERE id <= (SELECT id FROM emails ORDER BY id DESC LIMIT 1 OFFSET ?1)",
+        [limit as i64],
+    )?)
 }
 
 /// Runs the migration steps this Inbox has not run yet, all or none.

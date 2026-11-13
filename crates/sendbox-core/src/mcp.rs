@@ -7,6 +7,7 @@
 use std::io;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use chrono::{DateTime, SubsecRound, Utc};
@@ -40,7 +41,12 @@ pub(crate) struct Listener {
 
 impl Listener {
     /// Binds `127.0.0.1:port` (loopback only) and starts serving `/mcp`.
-    pub(crate) async fn bind(port: u16, inbox: Inbox, marks_read: bool) -> io::Result<Self> {
+    /// `marks_read` is read on every call, so changing it applies at once.
+    pub(crate) async fn bind(
+        port: u16,
+        inbox: Inbox,
+        marks_read: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
         let port = listener.local_addr()?.port();
         let stop = CancellationToken::new();
@@ -84,8 +90,9 @@ impl Listener {
 #[derive(Clone)]
 struct Tools {
     inbox: Inbox,
-    /// Whether `get_email` marks the Email it returns read.
-    marks_read: bool,
+    /// Whether `get_email` marks the Email it returns read. Shared with the
+    /// handle, which turns it on and off.
+    marks_read: Arc<AtomicBool>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -256,7 +263,7 @@ fn to_date(time: SystemTime) -> DateTime<Utc> {
 
 #[tool_router]
 impl Tools {
-    fn new(inbox: Inbox, marks_read: bool) -> Self {
+    fn new(inbox: Inbox, marks_read: Arc<AtomicBool>) -> Self {
         Self {
             inbox,
             marks_read,
@@ -302,7 +309,7 @@ impl Tools {
         Parameters(GetParams { id }): Parameters<GetParams>,
     ) -> Result<Json<Email>, String> {
         let id = EmailId(id);
-        if self.marks_read {
+        if self.marks_read.load(Ordering::Relaxed) {
             self.inbox
                 .mark_read(id)
                 .await

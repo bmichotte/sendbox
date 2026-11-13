@@ -1,11 +1,14 @@
 //! The menu bar / notification-area icon: left-click toggles the window,
-//! right-click opens the menu. While a port is in use, the icon wears an
-//! error badge and the menu and tooltip say which port.
+//! right-click opens the menu. It shows how many Emails are Unread and,
+//! while a port is in use, an error state: a badge on the icon, and the
+//! menu and tooltip say which port.
 
-use tauri::AppHandle;
+use std::sync::{Mutex, MutexGuard};
+
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager};
 
 use crate::{inbox, window};
 
@@ -16,7 +19,16 @@ const CLEAR_ALL: &str = "clear-all";
 const SETTINGS: &str = "settings";
 const QUIT: &str = "quit";
 
+/// What the tray shows, kept whole: on Windows the Unread count and the
+/// error state share the icon and the tooltip, so each change redraws both.
+#[derive(Default)]
+struct Shown {
+    unread: usize,
+    ports_in_use: Vec<u16>,
+}
+
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    app.manage(Mutex::new(Shown::default()));
     let tray = TrayIconBuilder::with_id(TRAY)
         .tooltip("Sendbox")
         .menu(&menu(app, &[])?)
@@ -43,14 +55,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     // macOS draws a black-and-alpha template icon in the menu bar's own
     // colours; Windows shows the full-colour app icon.
     #[cfg(target_os = "macos")]
-    let tray = tray
-        .icon(tauri::include_image!("icons/tray-template.png"))
-        .icon_as_template(true);
+    let tray = tray.icon(template_icon()).icon_as_template(true);
     #[cfg(not(target_os = "macos"))]
-    let tray = match app.default_window_icon() {
-        Some(icon) => tray.icon(icon.clone()),
-        None => tray,
-    };
+    let tray = tray.icon(app_icon());
 
     tray.build(app)?;
     Ok(())
@@ -88,41 +95,98 @@ fn in_use(port: u16) -> String {
     format!("Port {port} in use")
 }
 
+/// Shows how many Emails are `unread`, and nothing more at 0. macOS shows
+/// the count as text next to the menu bar icon; Windows cannot put text next
+/// to a tray icon, so it draws the count on the icon and says it in the
+/// tooltip.
+pub fn show_unread_count(app: &AppHandle, unread: usize) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY) else {
+        return Ok(());
+    };
+    let mut shown = shown(app);
+    shown.unread = unread;
+    #[cfg(target_os = "macos")]
+    tray.set_title((unread > 0).then(|| unread.to_string()))?;
+    #[cfg(not(target_os = "macos"))]
+    show_on_icon(&tray, &shown)?;
+    Ok(())
+}
+
 /// Shows the error state while `ports` are in use, or clears it when there
 /// are none.
 pub fn show_ports_in_use(app: &AppHandle, ports: &[u16]) -> tauri::Result<()> {
     let Some(tray) = app.tray_by_id(TRAY) else {
         return Ok(());
     };
+    let mut shown = shown(app);
+    shown.ports_in_use = ports.to_vec();
     tray.set_menu(Some(menu(app, ports)?))?;
-    let tooltip = if ports.is_empty() {
-        "Sendbox".to_string()
-    } else {
-        let problems: Vec<String> = ports.iter().copied().map(in_use).collect();
-        format!("Sendbox: {}", problems.join(", "))
-    };
-    tray.set_tooltip(Some(tooltip))?;
-
     #[cfg(target_os = "macos")]
     {
-        let mut icon = tauri::include_image!("icons/tray-template.png");
+        let mut icon = template_icon();
         if !ports.is_empty() {
             // Only alpha counts in a template: an opaque badge, its "!" a hole.
             icon = with_error_badge(&icon, [0, 0, 0, 0xFF], CLEAR);
         }
         // `set_icon` would drop the template flag.
         tray.set_icon_with_as_template(Some(icon), true)?;
+        tray.set_tooltip(Some(tooltip(&shown)))?;
     }
     #[cfg(not(target_os = "macos"))]
-    if let Some(icon) = app.default_window_icon() {
-        let icon = if ports.is_empty() {
-            icon.clone()
-        } else {
-            with_error_badge(icon, [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
-        };
-        tray.set_icon(Some(icon))?;
-    }
+    show_on_icon(&tray, &shown)?;
     Ok(())
+}
+
+/// Held while the tray is updated, so that updates show in order.
+fn shown(app: &AppHandle) -> MutexGuard<'_, Shown> {
+    app.state::<Mutex<Shown>>()
+        .inner()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The Windows icon and tooltip: the error state takes the icon over the
+/// Unread count, which the tooltip still gives.
+#[cfg(not(target_os = "macos"))]
+fn show_on_icon(tray: &tauri::tray::TrayIcon, shown: &Shown) -> tauri::Result<()> {
+    let icon = if !shown.ports_in_use.is_empty() {
+        with_error_badge(&app_icon(), [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
+    } else if shown.unread > 0 {
+        crate::badge::with_count(&app_icon(), shown.unread)
+    } else {
+        app_icon()
+    };
+    tray.set_icon(Some(icon))?;
+    tray.set_tooltip(Some(tooltip(shown)))
+}
+
+/// The ports in use, then (on Windows, which has no tray title) the Unread
+/// count; just "Sendbox" when there is neither.
+fn tooltip(shown: &Shown) -> String {
+    #[cfg_attr(target_os = "macos", allow(unused_mut))]
+    let mut lines: Vec<String> = shown.ports_in_use.iter().copied().map(in_use).collect();
+    #[cfg(not(target_os = "macos"))]
+    if shown.unread > 0 {
+        lines.push(format!("{} unread", shown.unread));
+    }
+    if lines.is_empty() {
+        "Sendbox".to_owned()
+    } else {
+        lines.join(", ")
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn template_icon() -> Image<'static> {
+    tauri::include_image!("icons/tray-template.png")
+}
+
+/// The app icon the Windows tray shows, and draws the Unread count on. A
+/// fixed image, rather than the window icon, whose size follows the display
+/// scale.
+#[cfg(not(target_os = "macos"))]
+fn app_icon() -> Image<'static> {
+    tauri::include_image!("icons/32x32.png")
 }
 
 const CLEAR: [u8; 4] = [0; 4];

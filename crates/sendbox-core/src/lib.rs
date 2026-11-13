@@ -95,6 +95,34 @@ impl EmailSummary {
             .as_deref()
             .or((!self.envelope_sender.is_empty()).then_some(self.envelope_sender.as_str()))
     }
+
+    /// The Sender tab the Email is in: its [sender](Self::sender), ignoring
+    /// case, or the "(no sender)" tab.
+    pub fn sender_tab(&self) -> SenderTabKey {
+        match self.sender() {
+            Some(sender) => SenderTabKey::Address(sender.to_lowercase()),
+            None => SenderTabKey::NoSender,
+        }
+    }
+}
+
+/// Which Sender tab an Email is in.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SenderTabKey {
+    /// The Emails from this address, lowercased: the `From` header address
+    /// (display name ignored), else the envelope sender.
+    Address(String),
+    /// The Emails with neither a `From` header address nor an envelope
+    /// sender: the "(no sender)" tab.
+    NoSender,
+}
+
+/// One Sender tab, as the window shows it next to "All".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderTab {
+    pub key: SenderTabKey,
+    /// How many of the tab's Emails are Unread.
+    pub unread: usize,
 }
 
 /// Which Emails to list. The default matches every Email; each field set
@@ -111,6 +139,8 @@ pub struct EmailFilter {
     pub since: Option<SystemTime>,
     /// Only Unread Emails.
     pub unread_only: bool,
+    /// Only the Emails in this Sender tab.
+    pub sender_tab: Option<SenderTabKey>,
 }
 
 impl EmailFilter {
@@ -126,6 +156,10 @@ impl EmailFilter {
             && contains_any(&self.subject, email.subject.as_deref())
             && self.since.is_none_or(|since| email.received_at >= since)
             && !(self.unread_only && email.read)
+            && self
+                .sender_tab
+                .as_ref()
+                .is_none_or(|tab| *tab == email.sender_tab())
     }
 }
 
@@ -178,7 +212,8 @@ pub enum CoreEvent {
     /// oldest Emails were pruned with it.
     EmailCaptured(EmailSummary),
     /// The Inbox changed other than by a Capture (Emails were deleted or
-    /// pruned, say): list it again.
+    /// pruned, or an Unread Email was read, by the user or an agent): list
+    /// it again, and count the Unread Emails again.
     InboxChanged,
     /// A listener's status changed after [`CoreHandle::set_port`].
     ListenerChanged {
@@ -269,8 +304,21 @@ impl CoreHandle {
         self.inbox.attachment(id, index).await
     }
 
-    /// Marks one Email read, as when the user opens it. Nothing happens if no
-    /// Email has this id.
+    /// One Sender tab per sender with Emails in the Inbox, the tab with the
+    /// most recent Email first. List a tab's Emails with
+    /// [`EmailFilter::sender_tab`].
+    pub async fn sender_tabs(&self) -> Result<Vec<SenderTab>, Error> {
+        self.inbox.sender_tabs().await
+    }
+
+    /// How many Emails in the whole Inbox are Unread, as the tray shows it.
+    pub async fn unread_count(&self) -> Result<usize, Error> {
+        self.inbox.unread_count().await
+    }
+
+    /// Marks one Email read, as when the user opens it, whether or not MCP
+    /// reads mark Emails read. Emits [`CoreEvent::InboxChanged`] if it was
+    /// Unread; nothing happens if no Email has this id.
     pub async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         self.inbox.mark_read(id).await
     }

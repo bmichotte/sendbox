@@ -14,6 +14,8 @@ export interface EmailRow {
   /** Addresses in the `To` header. */
   to: string[];
   subject: string | null;
+  /** False while the Email is Unread. */
+  read: boolean;
 }
 
 /** One Email in full, as the detail pane shows it. Mirrors `EmailDetail` in the shell. */
@@ -48,9 +50,43 @@ export interface Attachment {
   size: number;
 }
 
-/** Every Email in the Inbox, newest first. Rejects with the reason if the core is not running. */
-export function listEmails(): Promise<EmailRow[]> {
-  return invoke("list_emails");
+/** Which Sender tab: the one of `address`, or "(no sender)" when null. Mirrors `TabKey` in the shell. */
+export interface SenderTabKey {
+  address: string | null;
+}
+
+/** One Sender tab. Mirrors `SenderTabRow` in the shell. */
+export interface SenderTab extends SenderTabKey {
+  /** How many of its Emails are Unread. */
+  unread: number;
+}
+
+/** "All" and the Sender tabs. Mirrors `Tabs` in the shell. */
+export interface Tabs {
+  /** How many Emails in the whole Inbox are Unread, for "All". */
+  unread: number;
+  /** Ordered by their most recent Email; none for an empty Inbox. */
+  senders: SenderTab[];
+}
+
+/** Parts of the sender, of a recipient (To, Cc or Bcc) and of the subject, ignoring case; empty for any. */
+export interface Search {
+  from: string;
+  to: string;
+  subject: string;
+}
+
+/**
+ * The Emails of Sender tab `tab` (every Email when null, for "All") that `search` matches, newest
+ * first. Rejects with the reason if the core is not running.
+ */
+export function listEmails(tab: SenderTabKey | null, search: Search): Promise<EmailRow[]> {
+  return invoke("list_emails", { tab, search });
+}
+
+/** "All" and the Sender tabs, with their Unread counts. */
+export function listTabs(): Promise<Tabs> {
+  return invoke("tabs");
 }
 
 /** One Email in full. Rejects with the reason if it is no longer in the Inbox. */

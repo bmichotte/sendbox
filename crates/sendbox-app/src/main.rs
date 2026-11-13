@@ -5,6 +5,9 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Only Windows draws the Unread count on the tray icon.
+#[cfg(not(target_os = "macos"))]
+mod badge;
 mod detail;
 mod inbox;
 mod listeners;
@@ -36,6 +39,7 @@ fn main() {
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
+            inbox::tabs,
             inbox::delete_email,
             inbox::clear_all,
             detail::get_email,
@@ -53,8 +57,10 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             #[cfg(target_os = "macos")]
             app.set_menu(window::macos_app_menu(app.handle())?)?;
-            inbox::start(app.handle(), settings::core_config(app.handle())?);
+            // The tray first, so that it shows the Unread count from the start.
             tray::create(app.handle())?;
+            inbox::start(app.handle(), settings::core_config(app.handle())?);
+            // Once both exist: the tray shows a port in use from the start.
             listeners::watch(app.handle());
             Ok(())
         })

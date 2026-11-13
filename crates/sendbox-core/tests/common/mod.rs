@@ -6,6 +6,8 @@
 use std::ops::Deref;
 use std::time::Duration;
 
+use lettre::transport::smtp::AsyncSmtpTransportBuilder;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use sendbox_core::{Config, CoreHandle};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -53,14 +55,20 @@ impl Deref for TestCore {
     }
 }
 
+/// A `lettre` transport to the core configured as a developer's app would:
+/// plaintext, no TLS. Tests add credentials or mechanisms before sending.
+pub fn lettre_transport(port: u16) -> AsyncSmtpTransportBuilder {
+    AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1").port(port)
+}
+
 /// Sends `message` to the core over SMTP with `lettre`, as a developer's app would.
 pub async fn send_with_lettre(port: u16, message: lettre::Message) {
-    use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+    send_through(lettre_transport(port), message).await;
+}
 
-    let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
-        .port(port)
-        .build();
-    timeout(STEP_TIMEOUT, transport.send(message))
+/// Sends `message` through `transport`, failing the test if it is not accepted.
+pub async fn send_through(transport: AsyncSmtpTransportBuilder, message: lettre::Message) {
+    timeout(STEP_TIMEOUT, transport.build().send(message))
         .await
         .expect("lettre send timed out")
         .expect("lettre send succeeds");
@@ -70,6 +78,8 @@ pub async fn send_with_lettre(port: u16, message: lettre::Message) {
 #[derive(Debug)]
 pub struct Reply {
     pub code: u16,
+    /// The text of each line, after the code and separator.
+    pub lines: Vec<String>,
 }
 
 /// A raw SMTP client for protocol-level tests.
@@ -113,6 +123,7 @@ impl SmtpClient {
     }
 
     pub async fn read_reply(&mut self) -> Reply {
+        let mut lines = Vec::new();
         loop {
             let mut line = String::new();
             let read = timeout(STEP_TIMEOUT, self.stream.read_line(&mut line))
@@ -122,8 +133,9 @@ impl SmtpClient {
             assert!(read > 0, "connection closed while waiting for a reply");
             let line = line.trim_end_matches(['\r', '\n']);
             let code = line[..3].parse().expect("reply starts with a code");
+            lines.push(line.get(4..).unwrap_or_default().to_string());
             if line.as_bytes().get(3) != Some(&b'-') {
-                return Reply { code };
+                return Reply { code, lines };
             }
         }
     }

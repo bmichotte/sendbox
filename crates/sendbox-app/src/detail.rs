@@ -87,11 +87,15 @@ impl EmailDetail {
     }
 }
 
-/// One Email in full. Opening it does not mark it read.
+/// One Email in full, opened in the window: it becomes read, whether or not
+/// MCP reads mark Emails read, and the UI and the tray hear it.
 #[tauri::command]
 pub async fn get_email(core: State<'_, Core>, id: i64) -> Result<EmailDetail, String> {
     let core = core.handle()?;
     let id = EmailId(id);
+    core.mark_read(id)
+        .await
+        .map_err(|error| error.to_string())?;
     let view = core.email(id).await.map_err(|error| error.to_string())?;
     let raw_source = core
         .raw_source(id)

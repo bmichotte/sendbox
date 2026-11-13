@@ -172,41 +172,60 @@ impl Inbox {
     }
 
     /// The oldest Email `filter` matches, if any, marked read first if
-    /// `mark_read`. Finding and marking are one step, so concurrent callers
-    /// looking for Unread Emails never get the same one.
+    /// `mark_read` (emitting [`CoreEvent::InboxChanged`] if it was Unread).
+    /// Finding and marking are one step, so concurrent callers looking for
+    /// Unread Emails never get the same one.
     pub(crate) async fn oldest(
         &self,
         filter: EmailFilter,
         mark_read: bool,
     ) -> Result<Option<EmailId>, Error> {
-        self.with_db(move |db| {
-            let mut statement = db.prepare(&format!(
-                "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id ASC"
-            ))?;
-            let mut oldest = None;
-            for email in statement.query_map([], summary_from_row)? {
-                let email = email?;
-                if filter.matches(&email) {
-                    oldest = Some(email.id);
-                    break;
+        let (oldest, marked) = self
+            .with_db(move |db| {
+                let mut statement = db.prepare(&format!(
+                    "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id ASC"
+                ))?;
+                let mut oldest = None;
+                for email in statement.query_map([], summary_from_row)? {
+                    let email = email?;
+                    if filter.matches(&email) {
+                        oldest = Some(email.id);
+                        break;
+                    }
                 }
-            }
-            let Some(id) = oldest else { return Ok(None) };
-            if mark_read {
-                db.execute("UPDATE emails SET read = 1 WHERE id = ?1", [id.0])?;
-            }
-            Ok(Some(id))
+                let Some(id) = oldest else {
+                    return Ok((None, false));
+                };
+                let marked = mark_read && mark_unread_read(db, id)?;
+                Ok((Some(id), marked))
+            })
+            .await?;
+        if marked {
+            let _ = self.events.send(CoreEvent::InboxChanged);
+        }
+        Ok(oldest)
+    }
+
+    /// How many Emails are Unread.
+    pub(crate) async fn unread_count(&self) -> Result<usize, Error> {
+        self.with_db(|db| {
+            let count: i64 =
+                db.query_row("SELECT COUNT(*) FROM emails WHERE read = 0", [], |row| {
+                    row.get(0)
+                })?;
+            Ok(count as usize)
         })
         .await
     }
 
-    /// Marks one Email read. Nothing happens if no Email has this id.
+    /// Marks one Email read and emits [`CoreEvent::InboxChanged`] if it was
+    /// Unread. Nothing happens if no Email has this id.
     pub(crate) async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
-        self.with_db(move |db| {
-            db.execute("UPDATE emails SET read = 1 WHERE id = ?1", [id.0])?;
-            Ok(())
-        })
-        .await
+        let marked = self.with_db(move |db| mark_unread_read(db, id)).await?;
+        if marked {
+            let _ = self.events.send(CoreEvent::InboxChanged);
+        }
+        Ok(())
     }
 
     /// Deletes the `selected` Emails and returns how many there were. Emits
@@ -337,6 +356,15 @@ fn select(
         }
     }
     Ok(emails)
+}
+
+/// Marks the Email with this id read, and returns whether it was Unread.
+fn mark_unread_read(db: &Connection, id: EmailId) -> Result<bool, Error> {
+    let marked = db.execute(
+        "UPDATE emails SET read = 1 WHERE id = ?1 AND read = 0",
+        [id.0],
+    )?;
+    Ok(marked > 0)
 }
 
 /// Deletes the Emails with these ids, all or none, and returns how many

@@ -1,11 +1,13 @@
 //! The menu bar / notification-area icon: left-click toggles the window,
-//! right-click opens the menu.
+//! right-click opens the menu. It shows how many Emails are Unread.
 
 use tauri::AppHandle;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use crate::{inbox, window};
+
+const TRAY: &str = "main";
 
 const OPEN: &str = "open";
 const CLEAR_ALL: &str = "clear-all";
@@ -24,7 +26,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             &MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?,
         ],
     )?;
-    let tray = TrayIconBuilder::with_id("main")
+    let tray = TrayIconBuilder::with_id(TRAY)
         .tooltip("Sendbox")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -53,11 +55,41 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .icon(tauri::include_image!("icons/tray-template.png"))
         .icon_as_template(true);
     #[cfg(not(target_os = "macos"))]
-    let tray = match app.default_window_icon() {
-        Some(icon) => tray.icon(icon.clone()),
-        None => tray,
-    };
+    let tray = tray.icon(app_icon());
 
     tray.build(app)?;
     Ok(())
+}
+
+/// Shows how many Emails are `unread`, and nothing more at 0. macOS shows
+/// the count as text next to the menu bar icon; Windows cannot put text next
+/// to a tray icon, so it draws the count on the icon and says it in the
+/// tooltip.
+pub fn show_unread_count(app: &AppHandle, unread: usize) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id(TRAY) else {
+        return Ok(());
+    };
+    #[cfg(target_os = "macos")]
+    tray.set_title((unread > 0).then(|| unread.to_string()))?;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let (icon, tooltip) = match unread {
+            0 => (app_icon(), "Sendbox".to_owned()),
+            unread => (
+                crate::badge::with_count(&app_icon(), unread),
+                format!("{unread} unread"),
+            ),
+        };
+        tray.set_icon(Some(icon))?;
+        tray.set_tooltip(Some(tooltip))?;
+    }
+    Ok(())
+}
+
+/// The app icon the Windows tray shows, and draws the Unread count on. A
+/// fixed image, rather than the window icon, whose size follows the display
+/// scale.
+#[cfg(not(target_os = "macos"))]
+fn app_icon() -> tauri::image::Image<'static> {
+    tauri::include_image!("icons/32x32.png")
 }

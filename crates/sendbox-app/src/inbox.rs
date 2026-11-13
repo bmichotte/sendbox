@@ -1,5 +1,5 @@
 //! Bridges the core to the UI: starts the core, answers the UI's commands
-//! from the core handle, and tells the UI when the Inbox changes.
+//! from the core handle, and tells the UI and the tray when the Inbox changes.
 
 use std::time::UNIX_EPOCH;
 
@@ -11,10 +11,11 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
 };
+use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::oneshot;
 
-use crate::window;
+use crate::{tray, window};
 
 /// Tells the UI to list the Inbox again.
 const INBOX_CHANGED: &str = "inbox-changed";
@@ -34,34 +35,49 @@ impl Core {
     }
 }
 
-/// Starts the core with `config`. If it cannot start, the app still runs
-/// and the window shows why.
+/// Starts the core with `config` and keeps the UI and the tray (created
+/// first) up to date. If it cannot start, the app still runs and the window
+/// shows why.
 pub fn start(app: &AppHandle, config: Config) {
     let core = match tauri::async_runtime::block_on(sendbox_core::start(config)) {
-        Ok(handle) => {
-            forward_events(app.clone(), &handle);
-            Core::Running(handle)
-        }
+        Ok(handle) => Core::Running(handle),
         Err(error) => Core::Failed(format!("Sendbox could not start Capturing: {error}")),
     };
+    // Subscribed before the core is managed, so no event is missed; forwarded
+    // after, so the task can count Unread Emails through the managed core.
+    let events = core.handle().ok().map(CoreHandle::subscribe);
     app.manage(core);
+    if let Some(events) = events {
+        forward_events(app.clone(), events);
+    }
 }
 
-fn forward_events(app: AppHandle, core: &CoreHandle) {
-    let mut events = core.subscribe();
+fn forward_events(app: AppHandle, mut events: Receiver<CoreEvent>) {
     tauri::async_runtime::spawn(async move {
+        show_unread_count(&app).await;
         loop {
             match events.recv().await {
                 // Lagged: some events were missed, so the UI must re-list anyway.
                 Ok(CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
                 | Err(RecvError::Lagged(_)) => {
                     let _ = app.emit(INBOX_CHANGED, ());
+                    show_unread_count(&app).await;
                 }
                 Ok(_) => {}
                 Err(RecvError::Closed) => break,
             }
         }
     });
+}
+
+/// Shows the Inbox's Unread count on the tray icon. If the core cannot
+/// count, the tray keeps the last count it showed.
+async fn show_unread_count(app: &AppHandle) {
+    let core = app.state::<Core>();
+    let Ok(core) = core.handle() else { return };
+    if let Ok(unread) = core.unread_count().await {
+        let _ = tray::show_unread_count(app, unread);
+    }
 }
 
 /// One row of the Inbox list. Mirrors `EmailRow` in `ui/src/inbox.ts`.
@@ -74,6 +90,8 @@ pub struct EmailRow {
     sender: Option<String>,
     to: Vec<String>,
     subject: Option<String>,
+    /// False while the Email is Unread.
+    read: bool,
 }
 
 impl From<EmailSummary> for EmailRow {
@@ -87,6 +105,7 @@ impl From<EmailSummary> for EmailRow {
             sender: email.sender().map(str::to_owned),
             to: email.to,
             subject: email.subject,
+            read: email.read,
         }
     }
 }

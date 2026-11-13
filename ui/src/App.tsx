@@ -194,6 +194,8 @@ function EmailListItem({
   onDelete: () => void;
 }) {
   const receivedAt = new Date(email.receivedAt);
+  // Unread Emails stand out in bold; the list follows live as they are read.
+  const weight = email.read ? "font-normal" : "font-semibold";
 
   return (
     // Delete sits beside the button that opens the Email, not inside it.
@@ -211,7 +213,8 @@ function EmailListItem({
         className="block min-w-0 flex-1 py-2.5 pr-3 pl-4 text-left"
       >
         <div className="flex items-baseline gap-3">
-          <span className="min-w-0 flex-1 truncate font-medium">
+          <span className={`min-w-0 flex-1 truncate ${weight}`}>
+            {!email.read && <span className="sr-only">Unread: </span>}
             {email.sender ?? <span className="text-neutral-500 italic">(no sender)</span>}
           </span>
           <time
@@ -222,7 +225,7 @@ function EmailListItem({
             {formatReceivedAt(receivedAt)}
           </time>
         </div>
-        <div className="truncate">
+        <div className={`truncate ${weight}`}>
           {email.subject ?? <span className="text-neutral-500 italic">(no subject)</span>}
         </div>
         {email.to.length > 0 && (

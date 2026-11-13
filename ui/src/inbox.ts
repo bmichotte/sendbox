@@ -14,6 +14,8 @@ export interface EmailRow {
   /** Addresses in the `To` header. */
   to: string[];
   subject: string | null;
+  /** False while the Email is Unread. */
+  read: boolean;
 }
 
 /** One Email in full, as the detail pane shows it. Mirrors `EmailDetail` in the shell. */

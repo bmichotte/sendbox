@@ -7,6 +7,7 @@
 
 mod detail;
 mod inbox;
+mod settings;
 mod tray;
 mod window;
 
@@ -23,18 +24,26 @@ fn main() {
             tauri_plugin_window_state::Builder::default()
                 // Not VISIBLE: the window stays hidden at launch, like any tray app.
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
+                // The Settings window opens centred, at its fixed size.
+                .with_denylist(&[window::SETTINGS])
                 .build(),
         )
         // Save dialogs for attachments and Clear all confirmations; only Rust
         // shows them, so the window gets no dialog permission.
         .plugin(tauri_plugin_dialog::init())
+        // Launch at login, off until the user turns it on in Settings.
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
             inbox::smtp_port,
             inbox::delete_email,
             inbox::clear_all,
             detail::get_email,
-            detail::save_attachment
+            detail::save_attachment,
+            settings::get_settings,
+            settings::set_settings,
+            settings::launch_at_login,
+            settings::set_launch_at_login
         ])
         .setup(|app| {
             // No Dock icon. `LSUIElement` in Info.plist avoids the flash at launch
@@ -43,7 +52,7 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             #[cfg(target_os = "macos")]
             app.set_menu(window::macos_app_menu(app.handle())?)?;
-            inbox::start(app.handle())?;
+            inbox::start(app.handle(), settings::core_config(app.handle())?);
             tray::create(app.handle())?;
             Ok(())
         })

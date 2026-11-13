@@ -10,7 +10,10 @@ mod smtp;
 mod view;
 
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use inbox::Inbox;
@@ -27,17 +30,21 @@ pub struct Config {
     pub mcp_port: u16,
     /// Whether an Email an agent reads over MCP becomes read.
     pub mcp_marks_read: bool,
+    /// The most Emails the Inbox keeps: past it, the oldest are pruned.
+    pub retention_limit: NonZeroUsize,
     /// Directory holding the Inbox database; created if missing.
     pub data_dir: PathBuf,
 }
 
 impl Config {
-    /// The defaults: SMTP on 1025, MCP on 1026, MCP reads mark Emails as read.
+    /// The defaults: SMTP on 1025, MCP on 1026, MCP reads mark Emails as
+    /// read, and a Retention limit of 1000 Emails.
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
         Self {
             smtp_port: 1025,
             mcp_port: 1026,
             mcp_marks_read: true,
+            retention_limit: NonZeroUsize::new(1000).expect("1000 is not zero"),
             data_dir: data_dir.as_ref().to_path_buf(),
         }
     }
@@ -146,10 +153,11 @@ fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item =
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CoreEvent {
-    /// An Email was Captured into the Inbox.
+    /// An Email was Captured into the Inbox. Past the Retention limit, the
+    /// oldest Emails were pruned with it.
     EmailCaptured(EmailSummary),
-    /// The Inbox changed other than by a Capture (Emails were deleted, say):
-    /// list it again.
+    /// The Inbox changed other than by a Capture (Emails were deleted or
+    /// pruned, say): list it again.
     InboxChanged,
 }
 
@@ -159,15 +167,17 @@ pub struct CoreHandle {
     inbox: Inbox,
     smtp: smtp::Listener,
     mcp: mcp::Listener,
+    /// Whether MCP reads mark Emails as read, shared with the MCP endpoint.
+    mcp_marks_read: Arc<AtomicBool>,
 }
 
 /// Starts a core: opens the Inbox in the data directory, binds the SMTP
 /// listener and the MCP endpoint, and begins Capturing.
 pub async fn start(config: Config) -> Result<CoreHandle, Error> {
-    let inbox = Inbox::open(&config.data_dir).await?;
+    let inbox = Inbox::open(&config.data_dir, config.retention_limit).await?;
     let smtp = smtp::Listener::bind(config.smtp_port, inbox.clone()).await?;
-    let mcp = match mcp::Listener::bind(config.mcp_port, inbox.clone(), config.mcp_marks_read).await
-    {
+    let marks_read = Arc::new(AtomicBool::new(config.mcp_marks_read));
+    let mcp = match mcp::Listener::bind(config.mcp_port, inbox.clone(), marks_read.clone()).await {
         Ok(mcp) => mcp,
         Err(error) => {
             // Leave nothing listening behind a core that failed to start.
@@ -175,7 +185,12 @@ pub async fn start(config: Config) -> Result<CoreHandle, Error> {
             return Err(error.into());
         }
     };
-    Ok(CoreHandle { inbox, smtp, mcp })
+    Ok(CoreHandle {
+        inbox,
+        smtp,
+        mcp,
+        mcp_marks_read: marks_read,
+    })
 }
 
 impl CoreHandle {
@@ -225,6 +240,19 @@ impl CoreHandle {
     /// Deletes the `selected` Emails for good and returns how many there were.
     pub async fn delete_emails(&self, selected: EmailSelection) -> Result<usize, Error> {
         self.inbox.delete(selected).await
+    }
+
+    /// Changes the Retention limit. A lower limit prunes the oldest Emails
+    /// beyond it at once, read or not, and emits [`CoreEvent::InboxChanged`]
+    /// if it pruned any.
+    pub async fn set_retention_limit(&self, limit: NonZeroUsize) -> Result<(), Error> {
+        self.inbox.set_retention_limit(limit).await
+    }
+
+    /// Turns MCP read-marking on or off: whether an Email an agent reads
+    /// becomes read. Applies to agents already connected, from their next call.
+    pub fn set_mcp_marks_read(&self, marks_read: bool) {
+        self.mcp_marks_read.store(marks_read, Ordering::Relaxed);
     }
 
     /// Live events from now on. A subscriber that falls more than a few

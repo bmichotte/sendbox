@@ -1,1 +1,4 @@
 /target
+node_modules
+/ui/dist
+/crates/sendbox-app/gen

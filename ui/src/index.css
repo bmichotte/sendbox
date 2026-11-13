@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Native controls and scrollbars follow the system light / dark theme too. */
+:root {
+  color-scheme: light dark;
+}

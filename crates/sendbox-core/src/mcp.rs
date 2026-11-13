@@ -209,7 +209,7 @@ impl From<EmailView> for Email {
             date: to_date(summary.received_at),
             read: summary.read,
             envelope: Envelope {
-                sender: Some(summary.envelope_sender).filter(|sender| !sender.is_empty()),
+                sender: summary.envelope_sender,
                 recipients: summary.envelope_recipients,
             },
             to: summary.to,

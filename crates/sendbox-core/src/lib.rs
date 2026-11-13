@@ -77,8 +77,8 @@ pub struct EmailSummary {
     pub to: Vec<String>,
     /// The addresses in the `Cc` header, in order.
     pub cc: Vec<String>,
-    /// The SMTP `MAIL FROM` address; empty for a null sender (`MAIL FROM:<>`).
-    pub envelope_sender: String,
+    /// The SMTP `MAIL FROM` address; `None` for a null sender (`MAIL FROM:<>`).
+    pub envelope_sender: Option<String>,
     /// The SMTP `RCPT TO` addresses, in the order given (includes Bcc).
     pub envelope_recipients: Vec<String>,
     /// The decoded `Subject` header, if any.
@@ -93,9 +93,7 @@ impl EmailSummary {
     /// Who the Email is from: the `From` header address, else the envelope
     /// sender, else `None` (a null sender and no `From` header).
     pub fn sender(&self) -> Option<&str> {
-        self.from
-            .as_deref()
-            .or((!self.envelope_sender.is_empty()).then_some(self.envelope_sender.as_str()))
+        self.from.as_deref().or(self.envelope_sender.as_deref())
     }
 
     /// The Sender tab the Email is in: its [sender](Self::sender), ignoring
@@ -185,7 +183,7 @@ pub enum EmailSelection {
 /// The addresses the sender filters look in: the `From` header address and
 /// the envelope sender.
 fn senders(email: &EmailSummary) -> impl Iterator<Item = &str> {
-    [email.from.as_deref(), Some(email.envelope_sender.as_str())]
+    [email.from.as_deref(), email.envelope_sender.as_deref()]
         .into_iter()
         .flatten()
 }

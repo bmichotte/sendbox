@@ -73,7 +73,7 @@ async fn utf8_addresses_and_subject_and_an_8bit_body_are_captured_intact() {
     let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     let email = &emails[0];
-    assert_eq!(email.envelope_sender, "jöhn@exämple.test");
+    assert_eq!(email.envelope_sender.as_deref(), Some("jöhn@exämple.test"));
     assert_eq!(email.envelope_recipients, ["zoë@exämple.test"]);
     assert_eq!(email.subject.as_deref(), Some("Café ☕ prêt"));
     assert_eq!(core.raw_source(email.id).await.unwrap(), Some(sent));
@@ -231,7 +231,7 @@ async fn a_null_sender_is_captured() {
     assert_eq!(reply.code, 250);
     let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0].envelope_sender, "");
+    assert_eq!(emails[0].envelope_sender, None);
 }
 
 #[tokio::test]
@@ -267,7 +267,10 @@ async fn raw_utf8_headers_are_captured_intact() {
 
     assert_eq!(smtp.read_reply().await.code, 250);
     let emails = core.inbox().await;
-    assert_eq!(emails[0].envelope_sender, "jöhn@exämple.test");
+    assert_eq!(
+        emails[0].envelope_sender.as_deref(),
+        Some("jöhn@exämple.test")
+    );
     assert_eq!(emails[0].envelope_recipients, ["zoë@exämple.test"]);
     assert_eq!(emails[0].subject.as_deref(), Some("Café ☕ prêt"));
     assert_eq!(

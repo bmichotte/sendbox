@@ -248,7 +248,8 @@ impl Session {
                     self.reject_too_large();
                 } else {
                     self.transaction = Some(Envelope {
-                        sender: from.address,
+                        // `MAIL FROM:<>`, the null sender, gives no address.
+                        sender: (!from.address.is_empty()).then_some(from.address),
                         recipients: Vec::new(),
                     });
                     self.reply(250, "Sender OK");

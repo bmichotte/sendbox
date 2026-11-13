@@ -59,8 +59,7 @@ impl EmailDetail {
         } = view;
         Self {
             cc: summary.cc.clone(),
-            envelope_sender: Some(summary.envelope_sender.clone())
-                .filter(|sender| !sender.is_empty()),
+            envelope_sender: summary.envelope_sender.clone(),
             envelope_recipients: summary.envelope_recipients.clone(),
             row: EmailRow::from(summary),
             text,

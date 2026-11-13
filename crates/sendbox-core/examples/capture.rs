@@ -83,11 +83,7 @@ fn print_email(email: &EmailSummary) {
     println!(
         "#{} {} → {} | {} | {} bytes",
         email.id.0,
-        if email.envelope_sender.is_empty() {
-            "<>"
-        } else {
-            &email.envelope_sender
-        },
+        email.envelope_sender.as_deref().unwrap_or("<>"),
         email.envelope_recipients.join(", "),
         email.subject.as_deref().unwrap_or("(no subject)"),
         email.size,

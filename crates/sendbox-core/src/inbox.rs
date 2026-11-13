@@ -50,7 +50,8 @@ const SUMMARY_COLUMNS: &str = "id, received_at_ns, envelope_sender, envelope_rec
 
 /// The SMTP envelope of one Email: who the client said it was from and to.
 pub(crate) struct Envelope {
-    pub(crate) sender: String,
+    /// `None` for a null sender (`MAIL FROM:<>`).
+    pub(crate) sender: Option<String>,
     pub(crate) recipients: Vec<String>,
 }
 
@@ -121,7 +122,7 @@ impl Inbox {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         to_unix_nanos(received_at),
-                        envelope.sender,
+                        encode_sender(envelope.sender.as_deref()),
                         encode_addresses(&envelope.recipients),
                         headers.from,
                         encode_addresses(&headers.to),
@@ -419,7 +420,7 @@ fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {
     Ok(EmailSummary {
         id: EmailId(row.get(0)?),
         received_at: from_unix_nanos(row.get(1)?),
-        envelope_sender: row.get(2)?,
+        envelope_sender: decode_sender(row.get(2)?),
         envelope_recipients: decode_addresses(&row.get::<_, String>(3)?),
         from: row.get(4)?,
         to: decode_addresses(&row.get::<_, String>(5)?),
@@ -475,6 +476,15 @@ async fn blocking<T: Send + 'static>(
         Ok(result) => result,
         Err(join_error) => std::panic::resume_unwind(join_error.into_panic()),
     }
+}
+
+// A null sender is stored as an empty address, which no other sender has.
+fn encode_sender(sender: Option<&str>) -> &str {
+    sender.unwrap_or_default()
+}
+
+fn decode_sender(encoded: String) -> Option<String> {
+    (!encoded.is_empty()).then_some(encoded)
 }
 
 // Addresses never contain a line break (headers are unfolded when parsed),

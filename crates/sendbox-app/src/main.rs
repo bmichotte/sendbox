@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod badge;
+mod core_events;
 mod detail;
 mod inbox;
 mod listeners;

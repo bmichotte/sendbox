@@ -13,10 +13,9 @@ use tauri_plugin_dialog::{
     DialogExt, MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
 };
 use tokio::sync::broadcast::Receiver;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::oneshot;
 
-use crate::{tray, window};
+use crate::{core_events, tray, window};
 
 /// Tells the UI to list the Inbox again.
 const INBOX_CHANGED: &str = "inbox-changed";
@@ -56,17 +55,12 @@ pub fn start(app: &AppHandle, config: Config) {
 fn forward_events(app: AppHandle, mut events: Receiver<CoreEvent>) {
     tauri::async_runtime::spawn(async move {
         show_unread_count(&app).await;
-        loop {
-            match events.recv().await {
-                // Lagged: some events were missed, so the UI must re-list anyway.
-                Ok(CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
-                | Err(RecvError::Lagged(_)) => {
-                    let _ = app.emit(INBOX_CHANGED, ());
-                    show_unread_count(&app).await;
-                }
-                Ok(_) => {}
-                Err(RecvError::Closed) => break,
-            }
+        let inbox_changed = |event: &CoreEvent| {
+            matches!(event, CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
+        };
+        while core_events::changed(&mut events, inbox_changed).await {
+            let _ = app.emit(INBOX_CHANGED, ());
+            show_unread_count(&app).await;
         }
     });
 }

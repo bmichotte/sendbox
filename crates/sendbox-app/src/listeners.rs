@@ -5,10 +5,9 @@
 use sendbox_core::{CoreEvent, CoreHandle, Listener, ListenerStatus};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::broadcast::error::RecvError;
 
 use crate::inbox::Core;
-use crate::tray;
+use crate::{core_events, tray};
 
 /// Tells the windows the listeners' status changed; carries [`Listeners`].
 const LISTENERS_CHANGED: &str = "listeners-changed";
@@ -72,16 +71,11 @@ pub fn watch(app: &AppHandle) {
     show(app, core);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            match events.recv().await {
-                // Lagged: a change may have been missed, so show it anyway.
-                Ok(CoreEvent::ListenerChanged { .. }) | Err(RecvError::Lagged(_)) => {
-                    if let Ok(core) = app.state::<Core>().inner().handle() {
-                        show(&app, core);
-                    }
-                }
-                Ok(_) => {}
-                Err(RecvError::Closed) => break,
+        let listener_changed =
+            |event: &CoreEvent| matches!(event, CoreEvent::ListenerChanged { .. });
+        while core_events::changed(&mut events, listener_changed).await {
+            if let Ok(core) = app.state::<Core>().inner().handle() {
+                show(&app, core);
             }
         }
     });

@@ -150,6 +150,35 @@ impl Inbox {
         .await
     }
 
+    /// The oldest Email `filter` matches, if any, marked read first if
+    /// `mark_read`. Finding and marking are one step, so concurrent callers
+    /// looking for Unread Emails never get the same one.
+    pub(crate) async fn oldest(
+        &self,
+        filter: EmailFilter,
+        mark_read: bool,
+    ) -> Result<Option<EmailId>, Error> {
+        self.with_db(move |db| {
+            let mut statement = db.prepare(&format!(
+                "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id ASC"
+            ))?;
+            let mut oldest = None;
+            for email in statement.query_map([], summary_from_row)? {
+                let email = email?;
+                if filter.matches(&email) {
+                    oldest = Some(email.id);
+                    break;
+                }
+            }
+            let Some(id) = oldest else { return Ok(None) };
+            if mark_read {
+                db.execute("UPDATE emails SET read = 1 WHERE id = ?1", [id.0])?;
+            }
+            Ok(Some(id))
+        })
+        .await
+    }
+
     /// Marks one Email read. Nothing happens if no Email has this id.
     pub(crate) async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         self.with_db(move |db| {

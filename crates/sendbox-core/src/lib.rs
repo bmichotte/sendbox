@@ -40,7 +40,11 @@ pub struct EmailSummary {
     pub id: EmailId,
     /// When the Email was Captured.
     pub received_at: SystemTime,
-    /// The SMTP `MAIL FROM` address.
+    /// The first address in the `From` header, if any.
+    pub from: Option<String>,
+    /// The addresses in the `To` header, in order.
+    pub to: Vec<String>,
+    /// The SMTP `MAIL FROM` address; empty for a null sender (`MAIL FROM:<>`).
     pub envelope_sender: String,
     /// The SMTP `RCPT TO` addresses, in the order given (includes Bcc).
     pub envelope_recipients: Vec<String>,
@@ -48,6 +52,16 @@ pub struct EmailSummary {
     pub subject: Option<String>,
     /// Size of the raw source in bytes.
     pub size: u64,
+}
+
+impl EmailSummary {
+    /// Who the Email is from: the `From` header address, else the envelope
+    /// sender, else `None` (a null sender and no `From` header).
+    pub fn sender(&self) -> Option<&str> {
+        self.from
+            .as_deref()
+            .or((!self.envelope_sender.is_empty()).then_some(self.envelope_sender.as_str()))
+    }
 }
 
 /// Something that happened in the core, broadcast live to subscribers.

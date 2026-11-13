@@ -215,3 +215,59 @@ async fn each_capture_emits_an_email_captured_event() {
     listed.reverse();
     assert_eq!(captured, listed, "events carry the Emails as listed");
 }
+
+#[tokio::test]
+async fn the_list_shows_the_from_and_to_header_addresses_apart_from_the_envelope() {
+    let core = TestCore::start().await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+
+    smtp.send_transaction(
+        "bounces@mailer.test",
+        &["alice@example.com", "bob@example.com", "audit@acme.test"],
+        b"From: Acme Shop <shop@acme.test>\r\n\
+          To: Alice <alice@example.com>, bob@example.com\r\n\
+          Subject: Your order\r\n\
+          \r\n\
+          Thanks\r\n\
+          .\r\n",
+    )
+    .await;
+
+    let email = &core.list_emails().await.unwrap()[0];
+    assert_eq!(email.from.as_deref(), Some("shop@acme.test"));
+    assert_eq!(email.to, ["alice@example.com", "bob@example.com"]);
+    assert_eq!(email.envelope_sender, "bounces@mailer.test");
+}
+
+#[tokio::test]
+async fn the_sender_is_the_from_header_address_else_the_envelope_sender() {
+    let core = TestCore::start().await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    for (envelope_sender, data) in [
+        (
+            "bounces@mailer.test",
+            "From: Acme Shop <shop@acme.test>\r\nSubject: With From\r\n\r\n.\r\n",
+        ),
+        ("app@acme.test", "Subject: Without From\r\n\r\n.\r\n"),
+        ("", "Subject: Null sender\r\n\r\n.\r\n"),
+    ] {
+        let reply = smtp
+            .send_transaction(envelope_sender, &["alice@example.com"], data.as_bytes())
+            .await;
+        assert_eq!(reply.code, 250);
+    }
+
+    let emails = core.list_emails().await.unwrap();
+    let senders: Vec<_> = emails
+        .iter()
+        .map(|email| (email.subject.as_deref().unwrap(), email.sender()))
+        .collect();
+    assert_eq!(
+        senders,
+        [
+            ("Null sender", None),
+            ("Without From", Some("app@acme.test")),
+            ("With From", Some("shop@acme.test")),
+        ]
+    );
+}

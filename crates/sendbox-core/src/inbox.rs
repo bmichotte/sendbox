@@ -13,8 +13,13 @@ const DATABASE_FILE: &str = "inbox.sqlite3";
 /// Events a slow subscriber may fall behind by before it starts missing some.
 const EVENT_BACKLOG: usize = 256;
 
-const SCHEMA: &str = "
-    CREATE TABLE IF NOT EXISTS emails (
+/// Each step brings the schema up one version, and `PRAGMA user_version`
+/// records how many have run. Append new steps; never edit one that may have
+/// run on someone's Inbox.
+const MIGRATIONS: &[&str] = &[
+    // 1: the Inbox as first Captured. Inboxes from before versioning are at
+    // version 0 but already have this table.
+    "CREATE TABLE IF NOT EXISTS emails (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
         received_at_ns      INTEGER NOT NULL,
         envelope_sender     TEXT NOT NULL,
@@ -22,8 +27,11 @@ const SCHEMA: &str = "
         subject             TEXT,
         size                INTEGER NOT NULL,
         raw_source          BLOB NOT NULL
-    );
-";
+    );",
+    // 2: header From and To for the Inbox list; Emails Captured earlier have none.
+    "ALTER TABLE emails ADD COLUMN from_address TEXT;
+     ALTER TABLE emails ADD COLUMN to_addresses TEXT NOT NULL DEFAULT '';",
+];
 
 /// The SMTP envelope of one Email: who the client said it was from and to.
 pub(crate) struct Envelope {
@@ -43,8 +51,8 @@ impl Inbox {
         let data_dir = data_dir.to_path_buf();
         let db = blocking(move || -> Result<Connection, Error> {
             std::fs::create_dir_all(&data_dir)?;
-            let db = Connection::open(path)?;
-            db.execute_batch(SCHEMA)?;
+            let mut db = Connection::open(path)?;
+            migrate(&mut db)?;
             Ok(db)
         })
         .await?;
@@ -66,20 +74,20 @@ impl Inbox {
         raw_source: Vec<u8>,
     ) -> Result<EmailSummary, Error> {
         let received_at = SystemTime::now();
-        let subject = mail_parser::MessageParser::default()
-            .parse_headers(&raw_source)
-            .and_then(|message| message.subject().map(str::to_owned));
+        let headers = SummaryHeaders::parse(&raw_source);
         let email = self
             .with_db(move |db| {
                 db.execute(
                     "INSERT INTO emails (received_at_ns, envelope_sender, envelope_recipients,
-                                     subject, size, raw_source)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                     from_address, to_addresses, subject, size, raw_source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
                         to_unix_nanos(received_at),
                         envelope.sender,
-                        encode_recipients(&envelope.recipients),
-                        subject,
+                        encode_addresses(&envelope.recipients),
+                        headers.from,
+                        encode_addresses(&headers.to),
+                        headers.subject,
                         raw_source.len() as i64,
                         raw_source,
                     ],
@@ -87,9 +95,11 @@ impl Inbox {
                 Ok(EmailSummary {
                     id: EmailId(db.last_insert_rowid()),
                     received_at,
+                    from: headers.from,
+                    to: headers.to,
                     envelope_sender: envelope.sender,
                     envelope_recipients: envelope.recipients,
-                    subject,
+                    subject: headers.subject,
                     size: raw_source.len() as u64,
                 })
             })
@@ -103,7 +113,8 @@ impl Inbox {
     pub(crate) async fn list(&self) -> Result<Vec<EmailSummary>, Error> {
         self.with_db(|db| {
             let mut statement = db.prepare(
-                "SELECT id, received_at_ns, envelope_sender, envelope_recipients, subject, size
+                "SELECT id, received_at_ns, envelope_sender, envelope_recipients,
+                        from_address, to_addresses, subject, size
                  FROM emails ORDER BY id DESC",
             )?;
             let emails = statement
@@ -137,15 +148,62 @@ impl Inbox {
     }
 }
 
+/// Runs the migration steps this Inbox has not run yet, all or none.
+fn migrate(db: &mut Connection) -> Result<(), Error> {
+    let transaction = db.transaction()?;
+    let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    for (done, step) in (1..).zip(MIGRATIONS).skip(version.max(0) as usize) {
+        transaction.execute_batch(step)?;
+        transaction.pragma_update(None, "user_version", done)?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {
     Ok(EmailSummary {
         id: EmailId(row.get(0)?),
         received_at: from_unix_nanos(row.get(1)?),
         envelope_sender: row.get(2)?,
-        envelope_recipients: decode_recipients(&row.get::<_, String>(3)?),
-        subject: row.get(4)?,
-        size: row.get::<_, i64>(5)? as u64,
+        envelope_recipients: decode_addresses(&row.get::<_, String>(3)?),
+        from: row.get(4)?,
+        to: decode_addresses(&row.get::<_, String>(5)?),
+        subject: row.get(6)?,
+        size: row.get::<_, i64>(7)? as u64,
     })
+}
+
+/// The headers an [`EmailSummary`] carries, decoded once at Capture.
+#[derive(Default)]
+struct SummaryHeaders {
+    from: Option<String>,
+    to: Vec<String>,
+    subject: Option<String>,
+}
+
+impl SummaryHeaders {
+    fn parse(raw_source: &[u8]) -> Self {
+        let Some(message) = mail_parser::MessageParser::default().parse_headers(raw_source) else {
+            return Self::default();
+        };
+        Self {
+            from: message
+                .from()
+                .and_then(|from| from.first())
+                .and_then(|mailbox| mailbox.address())
+                .map(str::to_owned),
+            to: message
+                .to()
+                .map(|to| {
+                    to.mailboxes()
+                        .filter_map(|mailbox| mailbox.address())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            subject: message.subject().map(str::to_owned),
+        }
+    }
 }
 
 async fn blocking<T: Send + 'static>(
@@ -157,12 +215,13 @@ async fn blocking<T: Send + 'static>(
     }
 }
 
-// SMTP addresses never contain a line break, so one per line is unambiguous.
-fn encode_recipients(recipients: &[String]) -> String {
-    recipients.join("\n")
+// Addresses never contain a line break (headers are unfolded when parsed),
+// so one per line is unambiguous.
+fn encode_addresses(addresses: &[String]) -> String {
+    addresses.join("\n")
 }
 
-fn decode_recipients(encoded: &str) -> Vec<String> {
+fn decode_addresses(encoded: &str) -> Vec<String> {
     encoded.lines().map(str::to_owned).collect()
 }
 

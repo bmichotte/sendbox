@@ -72,3 +72,59 @@ fn non_loopback_ipv4() -> Option<std::net::IpAddr> {
     let address = socket.local_addr().ok()?.ip();
     (!address.is_loopback() && !address.is_unspecified()).then_some(address)
 }
+
+#[tokio::test]
+async fn an_inbox_written_before_from_and_to_were_kept_still_opens_and_captures() {
+    let data_dir = tempfile::TempDir::new().unwrap();
+    // The Inbox exactly as the first version of the core left it.
+    let db = rusqlite::Connection::open(data_dir.path().join("inbox.sqlite3")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE emails (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at_ns      INTEGER NOT NULL,
+            envelope_sender     TEXT NOT NULL,
+            envelope_recipients TEXT NOT NULL,
+            subject             TEXT,
+            size                INTEGER NOT NULL,
+            raw_source          BLOB NOT NULL
+        );
+        INSERT INTO emails (received_at_ns, envelope_sender, envelope_recipients, subject, size, raw_source)
+        VALUES (1, 'old@acme.test', 'alice@example.com', 'Kept from before', 2, x'0d0a');",
+    )
+    .unwrap();
+    drop(db);
+
+    let core = TestCore::start_with(0, data_dir).await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    let reply = smtp
+        .send_transaction(
+            "new@acme.test",
+            &["bob@example.com"],
+            b"From: new@acme.test\r\nTo: bob@example.com\r\nSubject: New\r\n\r\n.\r\n",
+        )
+        .await;
+
+    assert_eq!(reply.code, 250);
+    let emails = core.list_emails().await.unwrap();
+    let listed: Vec<_> = emails
+        .iter()
+        .map(|email| {
+            (
+                email.subject.as_deref(),
+                email.from.as_deref(),
+                email.to.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (
+                Some("New"),
+                Some("new@acme.test"),
+                vec!["bob@example.com".to_string()]
+            ),
+            (Some("Kept from before"), None, vec![]),
+        ]
+    );
+}

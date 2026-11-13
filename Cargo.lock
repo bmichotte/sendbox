@@ -3363,6 +3363,7 @@ name = "sendbox-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "chrono",
  "lettre",
  "mail-parser",

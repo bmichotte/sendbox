@@ -211,6 +211,8 @@ impl From<EmailView> for Email {
             summary,
             text,
             html,
+            // Inline images are attachment bytes, which agents never get.
+            html_with_inline_images: _,
             headers,
             links,
             attachments,

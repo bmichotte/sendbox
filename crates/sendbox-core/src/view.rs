@@ -4,10 +4,13 @@
 //! The raw source stays the record of the Email, so a parser bug never loses
 //! data and the parser can be swapped without migrating the Inbox.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
-use mail_parser::{HeaderForm, Message, MessageParser, PartKind};
-use regex::Regex;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use mail_parser::{HeaderForm, Message, MessageParser, MessagePart, PartKind};
+use regex::{Captures, Regex};
 
 use crate::EmailSummary;
 
@@ -20,6 +23,11 @@ pub struct EmailView {
     pub text: Option<String>,
     /// The HTML body as written by the sender, if the Email has one.
     pub html: Option<String>,
+    /// The HTML body ready to display: as written, but with each `cid:`
+    /// reference to a part of the Email (an inline image, say) replaced by a
+    /// `data:` URI holding that part, so a frame shows it without fetching
+    /// anything. Agents get `html` instead: no attachment bytes over MCP.
+    pub html_with_inline_images: Option<String>,
     /// Every header field, in order, with its value unfolded and decoded.
     pub headers: Vec<Header>,
     /// The link targets of the HTML body, then the URLs in the text body,
@@ -49,6 +57,27 @@ pub struct Attachment {
     pub size: u64,
 }
 
+/// An attachment with its content, as saved to disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentContent {
+    pub attachment: Attachment,
+    /// The content, decoded from its transfer encoding (base64, say).
+    pub bytes: Vec<u8>,
+}
+
+impl AttachmentContent {
+    /// The attachment at `index` in [`EmailView::attachments`] of the Email
+    /// with this raw source, if there is one.
+    pub(crate) fn parse(raw_source: &[u8], index: usize) -> Option<Self> {
+        let message = MessageParser::default().parse(raw_source)?;
+        let part = message.attachments().nth(index)?;
+        Some(Self {
+            attachment: attachment(part),
+            bytes: part.decoded().into_owned(),
+        })
+    }
+}
+
 impl EmailView {
     /// Builds the view of `summary`'s Email from its raw source.
     pub(crate) fn parse(summary: EmailSummary, raw_source: &[u8]) -> Self {
@@ -60,6 +89,7 @@ impl EmailView {
                 links: links(None, Some(&text)),
                 text: Some(text),
                 html: None,
+                html_with_inline_images: None,
                 headers: Vec::new(),
                 attachments: Vec::new(),
             };
@@ -69,6 +99,7 @@ impl EmailView {
         Self {
             summary,
             links: links(html.as_deref(), text.as_deref()),
+            html_with_inline_images: html.as_deref().map(|html| inline_parts(&message, html)),
             text,
             html,
             headers: headers(&message),
@@ -98,6 +129,61 @@ fn html_body(message: &Message<'_>) -> Option<String> {
         .map(|html| html.into_owned())
 }
 
+/// A `cid:` URL (RFC 2392) in an attribute or a CSS `url()`, quoted or not;
+/// the scheme ignores case. Captures the id, which may be URL-encoded.
+static CID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bcid:([^\s"'<>()&]+)"#).expect("valid regex"));
+
+/// `html` with its `cid:` references to parts of `message` replaced by the
+/// parts themselves, as `data:` URIs. A reference to no part stays as is.
+fn inline_parts(message: &Message<'_>, html: &str) -> String {
+    let parts: HashMap<&str, MessagePart<'_>> = message
+        .parts()
+        .filter_map(|part| Some((part.content_id()?, part)))
+        .collect();
+    CID.replace_all(html, |reference: &Captures<'_>| {
+        let id = &reference[1];
+        percent_decode(id)
+            .and_then(|decoded| parts.get(decoded.as_str()))
+            .or_else(|| parts.get(id))
+            .map_or_else(|| reference[0].to_owned(), |part| data_uri(*part))
+    })
+    .into_owned()
+}
+
+/// `encoded` with its `%XX` escapes decoded, or `None` if that is not UTF-8.
+fn percent_decode(encoded: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut rest = encoded.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        let escaped = (byte == b'%')
+            .then(|| after.get(..2))
+            .flatten()
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(decoded) => {
+                bytes.push(decoded);
+                rest = &after[2..];
+            }
+            None => {
+                bytes.push(byte);
+                rest = after;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// `part`'s decoded content as a `data:` URI.
+fn data_uri(part: MessagePart<'_>) -> String {
+    format!(
+        "data:{};base64,{}",
+        media_type(part),
+        BASE64.encode(part.decoded())
+    )
+}
+
 fn headers(message: &Message<'_>) -> Vec<Header> {
     message
         .headers()
@@ -114,21 +200,28 @@ fn headers(message: &Message<'_>) -> Vec<Header> {
         .collect()
 }
 
+/// The attachments, in the order [`AttachmentContent::parse`] indexes them.
 fn attachments(message: &Message<'_>) -> Vec<Attachment> {
-    message
-        .attachments()
-        .map(|part| Attachment {
-            name: part.attachment_name().map(str::to_owned),
-            content_type: part
-                .content_type()
-                .map(|content_type| match content_type.subtype() {
-                    Some(subtype) => format!("{}/{subtype}", content_type.ctype()),
-                    None => content_type.ctype().to_owned(),
-                })
-                .map_or_else(|| "text/plain".to_owned(), |media| media.to_lowercase()),
-            size: part.decoded_len() as u64,
+    message.attachments().map(attachment).collect()
+}
+
+fn attachment(part: MessagePart<'_>) -> Attachment {
+    Attachment {
+        name: part.attachment_name().map(str::to_owned),
+        content_type: media_type(part),
+        size: part.decoded_len() as u64,
+    }
+}
+
+/// `part`'s media type, such as `image/png`, lowercased. A part without one
+/// is plain text (RFC 2045).
+fn media_type(part: MessagePart<'_>) -> String {
+    part.content_type()
+        .map(|content_type| match content_type.subtype() {
+            Some(subtype) => format!("{}/{subtype}", content_type.ctype()),
+            None => content_type.ctype().to_owned(),
         })
-        .collect()
+        .map_or_else(|| "text/plain".to_owned(), |media| media.to_lowercase())
 }
 
 static HREF: LazyLock<Regex> = LazyLock::new(|| {

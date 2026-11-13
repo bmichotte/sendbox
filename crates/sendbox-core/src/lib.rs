@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use inbox::Inbox;
 use tokio::sync::broadcast;
 
-pub use view::{Attachment, EmailView, Header};
+pub use view::{Attachment, AttachmentContent, EmailView, Header};
 
 /// What a core needs to start. [`Config::new`] gives the defaults.
 #[derive(Debug, Clone)]
@@ -188,6 +188,18 @@ impl CoreHandle {
     /// if no Email has this id. Reading it does not mark it read.
     pub async fn email(&self, id: EmailId) -> Result<Option<EmailView>, Error> {
         self.inbox.view(id).await
+    }
+
+    /// The attachment at `index` in the Email view's
+    /// [`attachments`](EmailView::attachments), with its content, for saving
+    /// it; `None` if there is no such Email or attachment. Only this gives
+    /// attachments' bytes, and only to the shell: never over MCP.
+    pub async fn attachment(
+        &self,
+        id: EmailId,
+        index: usize,
+    ) -> Result<Option<AttachmentContent>, Error> {
+        self.inbox.attachment(id, index).await
     }
 
     /// Marks one Email read, as when the user opens it. Nothing happens if no

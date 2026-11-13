@@ -22,15 +22,16 @@ pub(crate) type Serve = Box<
         + Sync,
 >;
 
-/// One listener: serving its port, or stopped because the port is in use.
-pub(crate) struct Slot {
+/// One listener, serving its port or stopped because the port is in use,
+/// that can start again on its port or move to another while the core runs.
+pub(crate) struct RestartableListener {
     serve: Serve,
     running: tokio::sync::Mutex<Option<Running>>,
     /// Kept apart from `running` so that it reads without waiting.
     status: Mutex<ListenerStatus>,
 }
 
-impl Slot {
+impl RestartableListener {
     /// Binds `port` and serves it; if the port is in use, the listener stays
     /// stopped and says so.
     pub(crate) async fn start(port: u16, serve: Serve) -> Self {

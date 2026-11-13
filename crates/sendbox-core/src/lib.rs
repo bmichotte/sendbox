@@ -249,8 +249,8 @@ pub enum CoreEvent {
 /// listeners running until the async runtime stops.
 pub struct CoreHandle {
     inbox: Inbox,
-    smtp: listener::Slot,
-    mcp: listener::Slot,
+    smtp: listener::RestartableListener,
+    mcp: listener::RestartableListener,
     /// Whether MCP reads mark Emails as read, shared with the MCP endpoint.
     mcp_marks_read: Arc<AtomicBool>,
 }
@@ -262,9 +262,10 @@ pub struct CoreHandle {
 pub async fn start(config: Config) -> Result<CoreHandle, Error> {
     let inbox = Inbox::open(&config.data_dir, config.retention_limit).await?;
     let marks_read = Arc::new(AtomicBool::new(config.mcp_marks_read));
-    let smtp = listener::Slot::start(config.smtp_port, smtp::server(inbox.clone())).await;
+    let smtp =
+        listener::RestartableListener::start(config.smtp_port, smtp::server(inbox.clone())).await;
     let mcp_server = mcp::server(inbox.clone(), marks_read.clone());
-    let mcp = listener::Slot::start(config.mcp_port, mcp_server).await;
+    let mcp = listener::RestartableListener::start(config.mcp_port, mcp_server).await;
     Ok(CoreHandle {
         inbox,
         smtp,
@@ -293,7 +294,7 @@ impl CoreHandle {
         self.listener(listener).move_to(port, notify).await
     }
 
-    fn listener(&self, listener: Listener) -> &listener::Slot {
+    fn listener(&self, listener: Listener) -> &listener::RestartableListener {
         match listener {
             Listener::Smtp => &self.smtp,
             Listener::Mcp => &self.mcp,

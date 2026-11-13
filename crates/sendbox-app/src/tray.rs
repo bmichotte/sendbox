@@ -10,7 +10,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-use crate::{inbox, window};
+use crate::{badge, inbox, window};
 
 const TRAY: &str = "main";
 
@@ -122,7 +122,7 @@ pub fn show_ports_in_use(app: &AppHandle, ports: Vec<u16>) {
             let mut icon = template_icon();
             if !shown.ports_in_use.is_empty() {
                 // Only alpha counts in a template: an opaque badge, its "!" a hole.
-                icon = with_error_badge(&icon, [0, 0, 0, 0xFF], CLEAR);
+                icon = badge::with_error_badge(&icon, [0, 0, 0, 0xFF], badge::CLEAR);
             }
             // `set_icon` would drop the template flag.
             tray.set_icon_with_as_template(Some(icon), true)?;
@@ -164,9 +164,9 @@ fn update(
 #[cfg(not(target_os = "macos"))]
 fn show_on_icon(tray: &TrayIcon, shown: &Shown) -> tauri::Result<()> {
     let icon = if !shown.ports_in_use.is_empty() {
-        with_error_badge(&app_icon(), [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
+        badge::with_error_badge(&app_icon(), [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
     } else if shown.unread > 0 {
-        crate::badge::with_count(&app_icon(), shown.unread)
+        badge::with_count(&app_icon(), shown.unread)
     } else {
         app_icon()
     };
@@ -201,46 +201,4 @@ fn template_icon() -> Image<'static> {
 #[cfg(not(target_os = "macos"))]
 fn app_icon() -> Image<'static> {
     tauri::include_image!("icons/32x32.png")
-}
-
-const CLEAR: [u8; 4] = [0; 4];
-
-/// `icon` with a round badge in its bottom-right corner, `fill` with a `mark`
-/// coloured "!", set apart from the icon by a transparent ring.
-fn with_error_badge(icon: &Image<'_>, fill: [u8; 4], mark: [u8; 4]) -> Image<'static> {
-    let (width, height) = (icon.width(), icon.height());
-    let size = width.min(height) as f32;
-    let radius = size * 0.26;
-    let ring = size * 0.06;
-    let (center_x, center_y) = (width as f32 - radius, height as f32 - radius);
-    let mut rgba = icon.rgba().to_vec();
-    for y in 0..height {
-        for x in 0..width {
-            let (dx, dy) = (x as f32 + 0.5 - center_x, y as f32 + 0.5 - center_y);
-            let distance = dx.hypot(dy);
-            let pixel = if distance <= radius {
-                if on_exclamation_mark(dx, dy, radius) {
-                    mark
-                } else {
-                    fill
-                }
-            } else if distance <= radius + ring {
-                CLEAR
-            } else {
-                continue;
-            };
-            let at = ((y * width + x) * 4) as usize;
-            rgba[at..at + 4].copy_from_slice(&pixel);
-        }
-    }
-    Image::new_owned(rgba, width, height)
-}
-
-/// Whether the point `(dx, dy)` from the centre of a badge of `radius` is on
-/// its "!": a bar above a dot.
-fn on_exclamation_mark(dx: f32, dy: f32, radius: f32) -> bool {
-    let half_width = radius * 0.17;
-    let bar = -radius * 0.62..=radius * 0.16;
-    let dot = radius * 0.34..=radius * 0.34 + 2.0 * half_width;
-    dx.abs() <= half_width && (bar.contains(&dy) || dot.contains(&dy))
 }

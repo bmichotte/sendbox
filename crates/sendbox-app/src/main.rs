@@ -5,8 +5,6 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// Only Windows draws the Unread count on the tray icon.
-#[cfg(not(target_os = "macos"))]
 mod badge;
 mod detail;
 mod inbox;

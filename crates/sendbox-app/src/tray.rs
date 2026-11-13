@@ -23,13 +23,13 @@ const QUIT: &str = "quit";
 /// error state share the icon and the tooltip, so each change redraws both.
 /// Only the main thread uses it: see [`update`].
 #[derive(Default)]
-struct Shown {
+struct TrayState {
     unread: usize,
     ports_in_use: Vec<u16>,
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    app.manage(Mutex::new(Shown::default()));
+    app.manage(Mutex::new(TrayState::default()));
     let tray = TrayIconBuilder::with_id(TRAY)
         .tooltip("Sendbox")
         .menu(&menu(app, &[])?)
@@ -101,12 +101,12 @@ fn in_use(port: u16) -> String {
 /// to a tray icon, so it draws the count on the icon and says it in the
 /// tooltip.
 pub fn show_unread_count(app: &AppHandle, unread: usize) {
-    update(app, move |_, tray, shown| {
-        shown.unread = unread;
+    update(app, move |_, tray, state| {
+        state.unread = unread;
         #[cfg(target_os = "macos")]
         tray.set_title((unread > 0).then(|| unread.to_string()))?;
         #[cfg(not(target_os = "macos"))]
-        show_on_icon(tray, shown)?;
+        show_on_icon(tray, state)?;
         Ok(())
     });
 }
@@ -114,22 +114,22 @@ pub fn show_unread_count(app: &AppHandle, unread: usize) {
 /// Shows the error state while `ports` are in use, or clears it when there
 /// are none.
 pub fn show_ports_in_use(app: &AppHandle, ports: Vec<u16>) {
-    update(app, move |app, tray, shown| {
+    update(app, move |app, tray, state| {
         tray.set_menu(Some(menu(app, &ports)?))?;
-        shown.ports_in_use = ports;
+        state.ports_in_use = ports;
         #[cfg(target_os = "macos")]
         {
             let mut icon = template_icon();
-            if !shown.ports_in_use.is_empty() {
+            if !state.ports_in_use.is_empty() {
                 // Only alpha counts in a template: an opaque badge, its "!" a hole.
                 icon = badge::with_error_badge(&icon, [0, 0, 0, 0xFF], badge::CLEAR);
             }
             // `set_icon` would drop the template flag.
             tray.set_icon_with_as_template(Some(icon), true)?;
-            tray.set_tooltip(Some(tooltip(shown)))?;
+            tray.set_tooltip(Some(tooltip(state)))?;
         }
         #[cfg(not(target_os = "macos"))]
-        show_on_icon(tray, shown)?;
+        show_on_icon(tray, state)?;
         Ok(())
     });
 }
@@ -144,7 +144,7 @@ pub fn show_ports_in_use(app: &AppHandle, ports: Vec<u16>) {
 /// main thread ever takes the lock.
 fn update(
     app: &AppHandle,
-    change: impl FnOnce(&AppHandle, &TrayIcon, &mut Shown) -> tauri::Result<()> + Send + 'static,
+    change: impl FnOnce(&AppHandle, &TrayIcon, &mut TrayState) -> tauri::Result<()> + Send + 'static,
 ) {
     let app = app.clone();
     let on_main_thread = app.clone();
@@ -153,35 +153,35 @@ fn update(
         let Some(tray) = app.tray_by_id(TRAY) else {
             return;
         };
-        let shown = app.state::<Mutex<Shown>>();
-        let mut shown = shown.lock().unwrap_or_else(PoisonError::into_inner);
-        let _ = change(&app, &tray, &mut shown);
+        let state = app.state::<Mutex<TrayState>>();
+        let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = change(&app, &tray, &mut state);
     });
 }
 
 /// The Windows icon and tooltip: the error state takes the icon over the
 /// Unread count, which the tooltip still gives.
 #[cfg(not(target_os = "macos"))]
-fn show_on_icon(tray: &TrayIcon, shown: &Shown) -> tauri::Result<()> {
-    let icon = if !shown.ports_in_use.is_empty() {
+fn show_on_icon(tray: &TrayIcon, state: &TrayState) -> tauri::Result<()> {
+    let icon = if !state.ports_in_use.is_empty() {
         badge::with_error_badge(&app_icon(), [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
-    } else if shown.unread > 0 {
-        badge::with_count(&app_icon(), shown.unread)
+    } else if state.unread > 0 {
+        badge::with_count(&app_icon(), state.unread)
     } else {
         app_icon()
     };
     tray.set_icon(Some(icon))?;
-    tray.set_tooltip(Some(tooltip(shown)))
+    tray.set_tooltip(Some(tooltip(state)))
 }
 
 /// The ports in use, then (on Windows, which has no tray title) the Unread
 /// count; just "Sendbox" when there is neither.
-fn tooltip(shown: &Shown) -> String {
+fn tooltip(state: &TrayState) -> String {
     #[cfg_attr(target_os = "macos", allow(unused_mut))]
-    let mut lines: Vec<String> = shown.ports_in_use.iter().copied().map(in_use).collect();
+    let mut lines: Vec<String> = state.ports_in_use.iter().copied().map(in_use).collect();
     #[cfg(not(target_os = "macos"))]
-    if shown.unread > 0 {
-        lines.push(format!("{} unread", shown.unread));
+    if state.unread > 0 {
+        lines.push(format!("{} unread", state.unread));
     }
     if lines.is_empty() {
         "Sendbox".to_owned()

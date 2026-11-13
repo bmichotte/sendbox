@@ -106,7 +106,7 @@ impl Inbox {
         envelope: Envelope,
         raw_source: Vec<u8>,
     ) -> Result<EmailSummary, Error> {
-        let received_at = SystemTime::now();
+        let received_at = to_the_millisecond(SystemTime::now());
         let headers = SummaryHeaders::parse(&raw_source);
         let retention_limit = Arc::clone(&self.retention_limit);
         let email = self
@@ -494,6 +494,14 @@ fn to_unix_nanos(time: SystemTime) -> i64 {
         .map_or(0, |since| since.as_nanos() as i64)
 }
 
+/// Emails Captured before Capture times were kept to the millisecond have
+/// more precision: reading drops it.
 fn from_unix_nanos(nanos: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_nanos(nanos.max(0) as u64)
+    to_the_millisecond(UNIX_EPOCH + Duration::from_nanos(nanos.max(0) as u64))
+}
+
+/// `time` without its fraction of a millisecond.
+fn to_the_millisecond(time: SystemTime) -> SystemTime {
+    let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    UNIX_EPOCH + Duration::from_millis(since_epoch.as_millis() as u64)
 }

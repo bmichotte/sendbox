@@ -67,7 +67,9 @@ pub struct EmailId(pub i64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailSummary {
     pub id: EmailId,
-    /// When the Email was Captured.
+    /// When the Email was Captured, to the millisecond: the precision agents
+    /// and the window see, so that a date one of them got back compares as
+    /// they expect.
     pub received_at: SystemTime,
     /// The first address in the `From` header, if any.
     pub from: Option<String>,
@@ -135,7 +137,8 @@ pub struct EmailFilter {
     pub to: Option<String>,
     /// Part of the subject.
     pub subject: Option<String>,
-    /// Only Emails Captured at or after this time.
+    /// Only Emails Captured after this time: an Email's own
+    /// [`received_at`](EmailSummary::received_at) leaves it out.
     pub since: Option<SystemTime>,
     /// Only Unread Emails.
     pub unread_only: bool,
@@ -154,7 +157,7 @@ impl EmailFilter {
                 recipients.into_iter().flatten().map(String::as_str),
             )
             && contains_any(&self.subject, email.subject.as_deref())
-            && self.since.is_none_or(|since| email.received_at >= since)
+            && self.since.is_none_or(|since| email.received_at > since)
             && !(self.unread_only && email.read)
             && self
                 .sender_tab

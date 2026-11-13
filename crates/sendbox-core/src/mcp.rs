@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, SubsecRound, Utc};
+use chrono::{DateTime, Utc};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -81,7 +81,7 @@ struct ListParams {
     to: Option<String>,
     /// Only Emails whose subject contains this, ignoring case.
     subject: Option<String>,
-    /// Only Emails Captured at or after this time (RFC 3339).
+    /// Only Emails Captured after this time (RFC 3339): give an Email's date to leave it out.
     since: Option<DateTime<Utc>>,
     /// Only Unread Emails.
     #[serde(default)]
@@ -243,7 +243,7 @@ struct WaitParams {
     to: Option<String>,
     /// Only an Email whose subject contains this, ignoring case.
     subject: Option<String>,
-    /// Only an Email Captured at or after this time (RFC 3339).
+    /// Only an Email Captured after this time (RFC 3339): give an Email's date to leave it out.
     since: Option<DateTime<Utc>>,
     /// How long to wait for one, in seconds (default 30, at most 120).
     #[serde(default = "default_wait_seconds")]
@@ -274,7 +274,7 @@ struct DeleteParams {
     to: Option<String>,
     /// Delete the Emails whose subject contains this, ignoring case.
     subject: Option<String>,
-    /// Delete the Emails Captured at or after this time (RFC 3339).
+    /// Delete the Emails Captured after this time (RFC 3339): give an Email's date to leave it out.
     since: Option<DateTime<Utc>>,
     /// Delete only Unread Emails.
     #[serde(default)]
@@ -321,9 +321,10 @@ struct Deleted {
     deleted: usize,
 }
 
-/// A time to the millisecond, which is all an agent needs to read or compare.
+/// A Capture time, to the millisecond as the Inbox keeps it: given back as
+/// `since`, it compares exactly.
 fn to_date(time: SystemTime) -> DateTime<Utc> {
-    DateTime::<Utc>::from(time).trunc_subsecs(3)
+    DateTime::<Utc>::from(time)
 }
 
 #[tool_router]

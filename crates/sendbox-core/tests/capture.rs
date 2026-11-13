@@ -1,6 +1,6 @@
 mod common;
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use common::{STEP_TIMEOUT, SmtpClient, TestCore, send_with_lettre};
 use lettre::Message;
@@ -28,7 +28,9 @@ async fn an_email_sent_with_lettre_is_captured_into_the_inbox() {
     assert_eq!(email.envelope_recipients, ["alice@example.com"]);
     assert_eq!(email.subject.as_deref(), Some("Welcome aboard"));
     assert_eq!(email.size, sent_size as u64);
-    assert!(email.received_at >= before && email.received_at <= SystemTime::now());
+    // Capture times are to the millisecond.
+    let before = before - Duration::from_millis(1);
+    assert!(email.received_at > before && email.received_at <= SystemTime::now());
 }
 
 #[tokio::test]

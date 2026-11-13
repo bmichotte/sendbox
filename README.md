@@ -46,6 +46,8 @@ claude mcp add --transport http sendbox http://127.0.0.1:1026/mcp
 
 The agent can list Emails (`list_emails`, filtered by sender, recipient, subject, time or Unread) and read one (`get_email`: text, HTML, headers, envelope, links and attachment names; never the attachments themselves). Reading an Email marks it read. The endpoint only listens on this machine, and refuses requests that websites open in your browser try to send it (pages served from `localhost` excepted).
 
+To drive a flow end to end, the agent makes your app send an Email (a sign-up, a password reset), then calls `wait_for_email` with the same filters: it gets the oldest matching Unread Email already there, or else the next one your app sends, waiting 30 s by default (up to 120 s) before saying no Email was received. Like reading, waiting marks the Email it returns read, so the next wait gets the next Email.
+
 ## Development
 
 Requirements: Rust (stable) and Node 24.

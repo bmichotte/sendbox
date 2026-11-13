@@ -8,22 +8,25 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, SubsecRound, Utc};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::inbox::Inbox;
-use crate::{EmailFilter, EmailId, EmailSummary, EmailView};
+use crate::{CoreEvent, EmailFilter, EmailId, EmailSummary, EmailView};
 
 /// The path of the MCP endpoint, as in `http://127.0.0.1:1026/mcp`.
 const ENDPOINT: &str = "/mcp";
@@ -90,8 +93,8 @@ impl Listener {
 #[derive(Clone)]
 struct Tools {
     inbox: Inbox,
-    /// Whether `get_email` marks the Email it returns read. Shared with the
-    /// handle, which turns it on and off.
+    /// Whether `get_email` and `wait_for_email` mark the Email they return
+    /// read. Shared with the handle, which turns it on and off.
     marks_read: Arc<AtomicBool>,
     tool_router: ToolRouter<Self>,
 }
@@ -256,6 +259,35 @@ impl From<EmailView> for Email {
     }
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct WaitParams {
+    /// Only an Email whose sender (From header or envelope) contains this, ignoring case.
+    from: Option<String>,
+    /// Only an Email with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
+    to: Option<String>,
+    /// Only an Email whose subject contains this, ignoring case.
+    subject: Option<String>,
+    /// Only an Email Captured at or after this time (RFC 3339).
+    since: Option<DateTime<Utc>>,
+    /// How long to wait for one, in seconds (default 30, at most 120).
+    #[serde(default = "default_wait_seconds")]
+    timeout_seconds: u64,
+}
+
+fn default_wait_seconds() -> u64 {
+    30
+}
+
+/// Waits longer than this are cut short to it, in seconds.
+const MAX_WAIT_SECONDS: u64 = 120;
+
+/// What `wait_for_email` got.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct Waited {
+    /// The Email, as get_email gives it; null if none arrived in time.
+    email: Option<Email>,
+}
+
 /// A time to the millisecond, which is all an agent needs to read or compare.
 fn to_date(time: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(time).trunc_subsecs(3)
@@ -327,6 +359,63 @@ impl Tools {
             Err(error) => Err(error.to_string()),
         }
     }
+
+    #[tool(
+        description = "Wait for an Email, typically right after making the app send one \
+            (a sign-up, a password reset). Returns the oldest Unread Email matching the \
+            filters if one is already in the Inbox, otherwise the next matching Email \
+            Sendbox Captures, with everything get_email gives. Filters work as in \
+            list_emails. After timeout_seconds (default 30, at most 120) without one, \
+            returns a null email saying no Email was received; that is not an error. \
+            The Email returned becomes read, unless the user turned that off in \
+            Sendbox's settings, so the next wait returns another one; with it off, use \
+            since to skip the Emails already there.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<Waited>()
+    )]
+    async fn wait_for_email(
+        &self,
+        Parameters(params): Parameters<WaitParams>,
+        cancelled: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let timeout = params.timeout_seconds.min(MAX_WAIT_SECONDS);
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let filter = EmailFilter {
+            from: params.from,
+            to: params.to,
+            subject: params.subject,
+            since: params.since.map(SystemTime::from),
+            unread_only: true,
+        };
+        // Subscribe before looking in the Inbox, so an Email Captured in
+        // between is either found there or announced by an event.
+        let mut events = self.inbox.subscribe();
+        loop {
+            // The Inbox decides which Email a wait gets; events only say when
+            // to look again.
+            let found = self
+                .inbox
+                .oldest(filter.clone(), self.marks_read.load(Ordering::Relaxed))
+                .await
+                .map_err(|error| error.to_string())?;
+            if let Some(id) = found
+                && let Some(view) = self
+                    .inbox
+                    .view(id)
+                    .await
+                    .map_err(|error| error.to_string())?
+            {
+                return waited(Some(Email::from(view)), timeout);
+            }
+            // Only waiting is cut short: an Email found, and so maybe marked
+            // read, is always returned.
+            tokio::select! {
+                // The agent gave up on the call, or Sendbox is stopping.
+                () = cancelled.cancelled() => return Err("The wait was cancelled.".to_string()),
+                () = tokio::time::sleep_until(deadline) => return waited(None, timeout),
+                () = next_capture(&mut events, &filter) => {}
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -337,9 +426,41 @@ impl ServerHandler for Tools {
             .with_instructions(
                 "Sendbox Captures every Email sent to its local SMTP server and never \
                  delivers any. Find Captured Emails with list_emails, then read one \
-                 (bodies, headers, links, attachments) with get_email.",
+                 (bodies, headers, links, attachments) with get_email. To get the Email \
+                 an app is about to send, call wait_for_email.",
             )
     }
+}
+
+/// Returns once an Email `filter` matches is Captured, or once events were
+/// missed (the Inbox may then hold one).
+async fn next_capture(events: &mut broadcast::Receiver<CoreEvent>, filter: &EmailFilter) {
+    loop {
+        match events.recv().await {
+            Ok(CoreEvent::EmailCaptured(email)) if filter.matches(&email) => return,
+            Ok(_) => {}
+            Err(RecvError::Lagged(_)) => return,
+            // The Inbox outlives every tool call, so its events never end;
+            // should they, nothing else will be Captured.
+            Err(RecvError::Closed) => std::future::pending().await,
+        }
+    }
+}
+
+/// The result of `wait_for_email`: the Email it got, or `None` if none
+/// arrived within `timeout` seconds.
+fn waited(email: Option<Email>, timeout: u64) -> Result<CallToolResult, String> {
+    let received = email.is_some();
+    let value = rmcp::serde_json::to_value(Waited { email }).map_err(|error| error.to_string())?;
+    let mut result = CallToolResult::structured(value);
+    if !received {
+        // Say it in words: an agent may only read the text, and `null` alone
+        // reads like a failure.
+        result.content = vec![ContentBlock::text(format!(
+            "No Email received: none matching the filters arrived within {timeout} s."
+        ))];
+    }
+    Ok(result)
 }
 
 fn internal_error(error: crate::Error) -> ErrorData {

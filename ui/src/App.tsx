@@ -5,22 +5,41 @@ import {
   deleteEmail,
   type EmailRow,
   listEmails,
+  listTabs,
   onInboxChanged,
+  type Search,
+  type SenderTabKey,
   smtpPort,
+  type Tabs,
 } from "./inbox";
 
-type InboxState =
+/** Something loaded from the shell, and loaded again whenever the Inbox changes. */
+type Live<T> =
   | { status: "loading" }
-  | { status: "ready"; emails: EmailRow[] }
+  | { status: "ready"; value: T }
   | { status: "failed"; reason: string };
 
+const NO_SEARCH: Search = { from: "", to: "", subject: "" };
+
 export function App() {
-  const inbox = useInbox();
+  const tabs = useLive(listTabs, "tabs");
+  // null for "All".
+  const [tab, setTab] = useState<SenderTabKey | null>(null);
+  // A Sender tab whose last Email left the Inbox is gone: back to "All".
+  if (
+    tab !== null &&
+    tabs.status === "ready" &&
+    !tabs.value.senders.some((sender) => sender.address === tab.address)
+  ) {
+    setTab(null);
+  }
+  const [search, setSearch] = useState<Search>(NO_SEARCH);
+  const emails = useLive(() => listEmails(tab, search), JSON.stringify([tab, search]));
   const port = useSmtpPort();
   const [selected, setSelected] = useState<number | null>(null);
-  // An Email that left the Inbox is no longer open.
+  // An Email that left the list is no longer open.
   const openId =
-    inbox.status === "ready" && inbox.emails.some((email) => email.id === selected)
+    emails.status === "ready" && emails.value.some((email) => email.id === selected)
       ? selected
       : null;
   const [actionError, setActionError] = useState<string | null>(null);
@@ -30,7 +49,7 @@ export function App() {
       () => setActionError(null),
       (reason: unknown) => setActionError(String(reason)),
     );
-  const hasEmails = inbox.status === "ready" && inbox.emails.length > 0;
+  const inboxIsEmpty = tabs.status !== "ready" || tabs.value.senders.length === 0;
   // Deleting the open Email, or clearing the Inbox, closes it.
   const deleteOne = (id: number) =>
     run(
@@ -43,9 +62,9 @@ export function App() {
       <header className="flex items-baseline justify-between gap-4 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <h1 className="text-base font-semibold">
           Inbox
-          {inbox.status === "ready" && (
+          {emails.status === "ready" && (
             <span className="ml-2 font-normal text-neutral-500 tabular-nums">
-              {inbox.emails.length}
+              {emails.value.length}
             </span>
           )}
         </h1>
@@ -57,7 +76,7 @@ export function App() {
           )}
           <button
             type="button"
-            disabled={!hasEmails}
+            disabled={inboxIsEmpty}
             onClick={clearInbox}
             className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-neutral-700 dark:hover:bg-neutral-800"
           >
@@ -65,6 +84,12 @@ export function App() {
           </button>
         </div>
       </header>
+      {tabs.status === "ready" && !inboxIsEmpty && (
+        <>
+          <TabBar tabs={tabs.value} current={tab} onChoose={setTab} />
+          <SearchBar search={search} onChange={setSearch} />
+        </>
+      )}
       {actionError !== null && (
         <p
           role="alert"
@@ -83,7 +108,8 @@ export function App() {
           }
         >
           <InboxBody
-            inbox={inbox}
+            emails={emails}
+            inboxIsEmpty={inboxIsEmpty}
             port={port}
             openId={openId}
             onOpen={setSelected}
@@ -98,26 +124,126 @@ export function App() {
   );
 }
 
+/** "All" and one tab per sender, each with its Unread count. */
+function TabBar({
+  tabs,
+  current,
+  onChoose,
+}: {
+  tabs: Tabs;
+  current: SenderTabKey | null;
+  onChoose: (tab: SenderTabKey | null) => void;
+}) {
+  return (
+    <nav
+      role="tablist"
+      aria-label="Senders"
+      className="flex gap-1 overflow-x-auto border-b border-neutral-200 px-3 dark:border-neutral-800"
+    >
+      <TabButton selected={current === null} unread={tabs.unread} onClick={() => onChoose(null)}>
+        All
+      </TabButton>
+      {tabs.senders.map((sender) => (
+        <TabButton
+          key={sender.address ?? ""}
+          selected={current !== null && current.address === sender.address}
+          unread={sender.unread}
+          onClick={() => onChoose({ address: sender.address })}
+        >
+          {sender.address ?? <span className="italic">(no sender)</span>}
+        </TabButton>
+      ))}
+    </nav>
+  );
+}
+
+function TabButton({
+  selected,
+  unread,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  unread: number;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      onClick={onClick}
+      className={`-mb-px flex shrink-0 items-baseline gap-1.5 border-b-2 px-2 py-2 whitespace-nowrap ${
+        selected
+          ? "border-neutral-900 font-medium dark:border-neutral-100"
+          : "border-transparent text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100"
+      }`}
+    >
+      {children}
+      {unread > 0 && (
+        <span className="rounded-full bg-neutral-200 px-1.5 text-xs font-semibold text-neutral-700 tabular-nums dark:bg-neutral-700 dark:text-neutral-200">
+          <span className="sr-only">Unread: </span>
+          {unread}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Narrows the current tab by sender, recipient and subject. */
+function SearchBar({ search, onChange }: { search: Search; onChange: (search: Search) => void }) {
+  const fields: { field: keyof Search; label: string }[] = [
+    { field: "from", label: "From" },
+    { field: "to", label: "To" },
+    { field: "subject", label: "Subject" },
+  ];
+  return (
+    <div
+      role="search"
+      className="flex gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800"
+    >
+      {fields.map(({ field, label }) => (
+        <input
+          key={field}
+          type="search"
+          aria-label={`Search by ${label.toLowerCase()}`}
+          placeholder={label}
+          value={search[field]}
+          onChange={(event) => onChange({ ...search, [field]: event.target.value })}
+          className="min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-2 py-1 text-xs placeholder:text-neutral-400 dark:border-neutral-700"
+        />
+      ))}
+    </div>
+  );
+}
+
 function InboxBody({
-  inbox,
+  emails,
+  inboxIsEmpty,
   port,
   openId,
   onOpen,
   onDelete,
 }: {
-  inbox: InboxState;
+  emails: Live<EmailRow[]>;
+  /** Whether the whole Inbox is empty, not only the list a tab or a search narrows. */
+  inboxIsEmpty: boolean;
   port: number | null;
   openId: number | null;
   onOpen: (id: number) => void;
   onDelete: (id: number) => void;
 }) {
-  switch (inbox.status) {
+  switch (emails.status) {
     case "loading":
       return null;
     case "failed":
-      return <Notice title="Not Capturing">{inbox.reason}</Notice>;
+      return <Notice title="Not Capturing">{emails.reason}</Notice>;
     case "ready":
-      if (inbox.emails.length === 0) {
+      if (emails.value.length === 0 && !inboxIsEmpty) {
+        return <Notice title="No matching Emails">No Email in this tab matches the search.</Notice>;
+      }
+      if (emails.value.length === 0) {
         return (
           <Notice title="No Emails yet">
             Point your app's SMTP transport at{" "}
@@ -128,7 +254,7 @@ function InboxBody({
       }
       return (
         <ul>
-          {inbox.emails.map((email) => (
+          {emails.value.map((email) => (
             <EmailListItem
               key={email.id}
               email={email}
@@ -142,26 +268,30 @@ function InboxBody({
   }
 }
 
-/** The Inbox, listed again whenever the shell says it changed. */
-function useInbox(): InboxState {
-  const [inbox, setInbox] = useState<InboxState>({ status: "loading" });
+/**
+ * What `load` answers, loaded again whenever the shell says the Inbox changed, and whenever `key`
+ * changes: `key` names what `load` loads, so a new key means a new `load`.
+ */
+function useLive<T>(load: () => Promise<T>, key: string): Live<T> {
+  const [live, setLive] = useState<Live<T>>({ status: "loading" });
 
+  // `key` stands for `load`, a new function on every render.
   useEffect(() => {
     let active = true;
     let latest = 0;
-    const failed = (reason: unknown): InboxState => ({ status: "failed", reason: String(reason) });
+    const failed = (reason: unknown): Live<T> => ({ status: "failed", reason: String(reason) });
     const refresh = () => {
       const request = ++latest;
       // Only the newest answer counts: an older, slower one would be stale.
-      const settle = (next: InboxState) => active && request === latest && setInbox(next);
-      listEmails().then(
-        (emails) => settle({ status: "ready", emails }),
+      const settle = (next: Live<T>) => active && request === latest && setLive(next);
+      load().then(
+        (value) => settle({ status: "ready", value }),
         (reason: unknown) => settle(failed(reason)),
       );
     };
     const stopListening = onInboxChanged(refresh);
-    // List once listening, so that no Capture slips in between.
-    stopListening.then(refresh, (reason: unknown) => active && setInbox(failed(reason)));
+    // Load once listening, so that no Capture slips in between.
+    stopListening.then(refresh, (reason: unknown) => active && setLive(failed(reason)));
     return () => {
       active = false;
       stopListening.then(
@@ -169,9 +299,9 @@ function useInbox(): InboxState {
         () => {},
       );
     };
-  }, []);
+  }, [key]);
 
-  return inbox;
+  return live;
 }
 
 function useSmtpPort(): number | null {

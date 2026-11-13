@@ -38,6 +38,7 @@ fn main() {
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
+            inbox::tabs,
             inbox::smtp_port,
             inbox::delete_email,
             inbox::clear_all,

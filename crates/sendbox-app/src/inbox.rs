@@ -4,9 +4,10 @@
 use std::time::UNIX_EPOCH;
 
 use sendbox_core::{
-    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSelection, EmailSummary,
+    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSelection, EmailSummary, SenderTab,
+    SenderTabKey,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
@@ -110,15 +111,104 @@ impl From<EmailSummary> for EmailRow {
     }
 }
 
-/// Every Email in the Inbox, newest first.
+/// Which Sender tab: the one of `address`, or "(no sender)" for none.
+/// Mirrors `SenderTabKey` in `ui/src/inbox.ts`.
+#[derive(Deserialize)]
+pub struct TabKey {
+    address: Option<String>,
+}
+
+impl From<TabKey> for SenderTabKey {
+    fn from(tab: TabKey) -> Self {
+        match tab.address {
+            Some(address) => SenderTabKey::Address(address),
+            None => SenderTabKey::NoSender,
+        }
+    }
+}
+
+/// What the search bar narrows the list to: parts of the sender, of a
+/// recipient and of the subject, empty for any. Mirrors `Search` in
+/// `ui/src/inbox.ts`.
+#[derive(Deserialize)]
+pub struct Search {
+    from: String,
+    to: String,
+    subject: String,
+}
+
+/// The Emails of `tab` (every Email for "All") that `search` matches,
+/// newest first, with the same filters as `list_emails` over MCP.
 #[tauri::command]
-pub async fn list_emails(core: State<'_, Core>) -> Result<Vec<EmailRow>, String> {
+pub async fn list_emails(
+    core: State<'_, Core>,
+    tab: Option<TabKey>,
+    search: Search,
+) -> Result<Vec<EmailRow>, String> {
+    // An empty field searches for nothing, rather than for an empty part
+    // (which an Email without a subject, say, does not have).
+    let part = |text: String| (!text.is_empty()).then_some(text);
+    let filter = EmailFilter {
+        from: part(search.from),
+        to: part(search.to),
+        subject: part(search.subject),
+        sender_tab: tab.map(SenderTabKey::from),
+        ..EmailFilter::default()
+    };
     let emails = core
         .handle()?
-        .list_emails(&EmailFilter::default(), None)
+        .list_emails(&filter, None)
         .await
         .map_err(|error| error.to_string())?;
     Ok(emails.into_iter().map(EmailRow::from).collect())
+}
+
+/// The tabs above the list: "All" and the Sender tabs. Mirrors `Tabs` in
+/// `ui/src/inbox.ts`.
+#[derive(Serialize)]
+pub struct Tabs {
+    /// How many Emails in the Inbox are Unread, for "All".
+    unread: usize,
+    /// Ordered by their most recent Email.
+    senders: Vec<SenderTabRow>,
+}
+
+/// One Sender tab. Mirrors `SenderTab` in `ui/src/inbox.ts`.
+#[derive(Serialize)]
+pub struct SenderTabRow {
+    /// The sender's address, lowercased; `None` for "(no sender)".
+    address: Option<String>,
+    unread: usize,
+}
+
+impl From<SenderTab> for SenderTabRow {
+    fn from(tab: SenderTab) -> Self {
+        Self {
+            address: match tab.key {
+                SenderTabKey::Address(address) => Some(address),
+                SenderTabKey::NoSender => None,
+            },
+            unread: tab.unread,
+        }
+    }
+}
+
+/// "All" and the Sender tabs, each with its Unread count.
+#[tauri::command]
+pub async fn tabs(core: State<'_, Core>) -> Result<Tabs, String> {
+    let core = core.handle()?;
+    let senders = core
+        .sender_tabs()
+        .await
+        .map_err(|error| error.to_string())?;
+    let unread = core
+        .unread_count()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Tabs {
+        unread,
+        senders: senders.into_iter().map(SenderTabRow::from).collect(),
+    })
 }
 
 /// The port the SMTP listener is bound to.

@@ -321,6 +321,7 @@ impl DeleteParams {
             subject: self.subject,
             since: self.since.map(SystemTime::from),
             unread_only: self.unread_only,
+            sender_tab: None,
         };
         let filtered = filter != EmailFilter::default();
         match (self.ids, filtered, self.all) {
@@ -377,6 +378,7 @@ impl Tools {
             subject: params.subject,
             since: params.since.map(SystemTime::from),
             unread_only: params.unread_only,
+            sender_tab: None,
         };
         let emails = self
             .inbox
@@ -443,6 +445,7 @@ impl Tools {
             subject: params.subject,
             since: params.since.map(SystemTime::from),
             unread_only: true,
+            sender_tab: None,
         };
         // Subscribe before looking in the Inbox, so an Email Captured in
         // between is either found there or announced by an event.

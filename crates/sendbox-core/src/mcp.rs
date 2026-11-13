@@ -73,8 +73,9 @@ struct Tools {
     tool_router: ToolRouter<Self>,
 }
 
+/// The filters `list_emails`, `wait_for_email` and `delete_emails` share.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ListParams {
+struct FilterParams {
     /// Only Emails whose sender (From header or envelope) contains this, ignoring case.
     from: Option<String>,
     /// Only Emails with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
@@ -83,6 +84,26 @@ struct ListParams {
     subject: Option<String>,
     /// Only Emails Captured after this time (RFC 3339): give an Email's date to leave it out.
     since: Option<DateTime<Utc>>,
+}
+
+impl FilterParams {
+    /// The Inbox filter these give, for only Unread Emails if `unread_only`.
+    fn into_filter(self, unread_only: bool) -> EmailFilter {
+        EmailFilter {
+            from: self.from,
+            to: self.to,
+            subject: self.subject,
+            since: self.since.map(SystemTime::from),
+            unread_only,
+            ..EmailFilter::default()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListParams {
+    #[serde(flatten)]
+    filters: FilterParams,
     /// Only Unread Emails.
     #[serde(default)]
     unread_only: bool,
@@ -239,14 +260,8 @@ impl From<EmailView> for Email {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WaitParams {
-    /// Only an Email whose sender (From header or envelope) contains this, ignoring case.
-    from: Option<String>,
-    /// Only an Email with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
-    to: Option<String>,
-    /// Only an Email whose subject contains this, ignoring case.
-    subject: Option<String>,
-    /// Only an Email Captured after this time (RFC 3339): give an Email's date to leave it out.
-    since: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    filters: FilterParams,
     /// How long to wait for one, in seconds (default 30, at most 120).
     #[serde(default = "default_wait_seconds")]
     timeout_seconds: u64,
@@ -270,14 +285,8 @@ struct Waited {
 struct DeleteParams {
     /// Delete the Emails with these ids, as list_emails gives them.
     ids: Option<Vec<i64>>,
-    /// Delete the Emails whose sender (From header or envelope) contains this, ignoring case.
-    from: Option<String>,
-    /// Delete the Emails with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
-    to: Option<String>,
-    /// Delete the Emails whose subject contains this, ignoring case.
-    subject: Option<String>,
-    /// Delete the Emails Captured after this time (RFC 3339): give an Email's date to leave it out.
-    since: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    filters: FilterParams,
     /// Delete only Unread Emails.
     #[serde(default)]
     unread_only: bool,
@@ -291,15 +300,7 @@ impl DeleteParams {
     /// means, in exactly one way: deleting everything takes `all: true`,
     /// never an empty request, and a mix could be read more than one way.
     fn selection(self) -> Result<EmailSelection, String> {
-        let filter = EmailFilter {
-            from: self.from,
-            to: self.to,
-            subject: self.subject,
-            since: self.since.map(SystemTime::from),
-            unread_only: self.unread_only,
-            search: None,
-            sender_tab: None,
-        };
+        let filter = self.filters.into_filter(self.unread_only);
         let filtered = filter != EmailFilter::default();
         match (self.ids, filtered, self.all) {
             (Some(ids), false, false) => {
@@ -350,15 +351,7 @@ impl Tools {
         &self,
         Parameters(params): Parameters<ListParams>,
     ) -> Result<Json<EmailList>, ErrorData> {
-        let filter = EmailFilter {
-            from: params.from,
-            to: params.to,
-            subject: params.subject,
-            since: params.since.map(SystemTime::from),
-            unread_only: params.unread_only,
-            search: None,
-            sender_tab: None,
-        };
+        let filter = params.filters.into_filter(params.unread_only);
         let emails = self
             .inbox
             .list(filter, Some(params.limit as usize))
@@ -418,15 +411,8 @@ impl Tools {
     ) -> Result<CallToolResult, String> {
         let timeout = params.timeout_seconds.min(MAX_WAIT_SECONDS);
         let deadline = Instant::now() + Duration::from_secs(timeout);
-        let filter = EmailFilter {
-            from: params.from,
-            to: params.to,
-            subject: params.subject,
-            since: params.since.map(SystemTime::from),
-            unread_only: true,
-            search: None,
-            sender_tab: None,
-        };
+        // A wait only ever gets an Unread Email.
+        let filter = params.filters.into_filter(true);
         // Subscribe before looking in the Inbox, so an Email Captured in
         // between is either found there or announced by an event.
         let mut events = self.inbox.subscribe();

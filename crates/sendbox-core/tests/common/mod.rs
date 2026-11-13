@@ -13,11 +13,14 @@ use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
-use sendbox_core::{Config, CoreHandle, EmailFilter, EmailSummary, Listener, ListenerStatus};
+use sendbox_core::{
+    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSummary, Listener, ListenerStatus,
+};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 /// How long a test waits for any single network step before failing.
@@ -103,6 +106,35 @@ impl Deref for TestCore {
     fn deref(&self) -> &CoreHandle {
         &self.handle
     }
+}
+
+/// Has the core Capture one Email from `app@acme.test` per (subject,
+/// recipient), oldest first, and returns the ids of the Emails in the Inbox,
+/// newest first.
+pub async fn capture(core: &TestCore, emails: &[(&str, &str)]) -> Vec<EmailId> {
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    for (subject, recipient) in emails {
+        let raw = format!("From: app@acme.test\r\nSubject: {subject}\r\n\r\nHi\r\n");
+        smtp.capture("app@acme.test", &[recipient], &raw).await;
+    }
+    core.inbox().await.iter().map(|email| email.id).collect()
+}
+
+/// The subjects of `emails`, in order, failing the test for an Email
+/// without one.
+pub fn subjects(emails: &[EmailSummary]) -> Vec<&str> {
+    emails
+        .iter()
+        .map(|email| email.subject.as_deref().expect("a subject"))
+        .collect()
+}
+
+/// The next event, failing the test if none comes in time.
+pub async fn next_event(events: &mut broadcast::Receiver<CoreEvent>) -> CoreEvent {
+    timeout(STEP_TIMEOUT, events.recv())
+        .await
+        .expect("an event comes in time")
+        .expect("the core is still running")
 }
 
 /// A `lettre` transport to the core configured as a developer's app would:

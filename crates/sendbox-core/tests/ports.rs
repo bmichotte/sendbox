@@ -4,12 +4,11 @@
 
 mod common;
 
-use common::{Agent, STEP_TIMEOUT, SmtpClient, TestCore, test_config};
+use common::{Agent, STEP_TIMEOUT, SmtpClient, TestCore, next_event, test_config};
 use sendbox_core::{Config, CoreEvent, Listener, ListenerStatus};
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 /// Takes a free port on `127.0.0.1`, as another program would, for as long
@@ -219,13 +218,6 @@ async fn setting_the_port_a_listener_already_runs_on_leaves_it_and_its_sessions_
         matches!(next_event(&mut events).await, CoreEvent::EmailCaptured(_)),
         "no listener change to report"
     );
-}
-
-async fn next_event(events: &mut broadcast::Receiver<CoreEvent>) -> CoreEvent {
-    timeout(STEP_TIMEOUT, events.recv())
-        .await
-        .expect("an event in time")
-        .expect("an event")
 }
 
 /// Has the core Capture an Email with this subject over SMTP.

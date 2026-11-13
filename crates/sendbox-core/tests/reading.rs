@@ -3,26 +3,8 @@
 
 mod common;
 
-use common::{SmtpClient, TestCore};
+use common::{SmtpClient, TestCore, capture, subjects};
 use sendbox_core::{EmailFilter, EmailId, EmailView};
-
-/// Captures one Email per (subject, recipient), oldest first, and returns
-/// their ids newest first.
-async fn capture(core: &TestCore, emails: &[(&str, &str)]) -> Vec<EmailId> {
-    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
-    for (subject, recipient) in emails {
-        let raw = format!("From: app@acme.test\r\nSubject: {subject}\r\n\r\nHi\r\n");
-        smtp.capture("app@acme.test", &[recipient], &raw).await;
-    }
-    core.inbox().await.iter().map(|email| email.id).collect()
-}
-
-fn subjects(emails: &[sendbox_core::EmailSummary]) -> Vec<&str> {
-    emails
-        .iter()
-        .map(|email| email.subject.as_deref().expect("a subject"))
-        .collect()
-}
 
 #[tokio::test]
 async fn the_handle_lists_the_emails_a_filter_matches_newest_first_up_to_a_limit() {

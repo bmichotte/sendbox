@@ -1,5 +1,12 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { type EmailRow, listEmails, onInboxChanged, smtpPort } from "./inbox";
+import {
+  clearAll,
+  deleteEmail,
+  type EmailRow,
+  listEmails,
+  onInboxChanged,
+  smtpPort,
+} from "./inbox";
 
 type InboxState =
   | { status: "loading" }
@@ -9,6 +16,14 @@ type InboxState =
 export function App() {
   const inbox = useInbox();
   const port = useSmtpPort();
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The list follows from the Inbox-changed event; only a failure needs showing.
+  const run = (action: Promise<unknown>) =>
+    action.then(
+      () => setActionError(null),
+      (reason: unknown) => setActionError(String(reason)),
+    );
+  const hasEmails = inbox.status === "ready" && inbox.emails.length > 0;
 
   return (
     <div className="flex h-screen flex-col bg-white text-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
@@ -21,20 +36,46 @@ export function App() {
             </span>
           )}
         </h1>
-        {port !== null && (
-          <p className="text-xs text-neutral-500">
-            SMTP on <code className="font-mono">127.0.0.1:{port}</code>
-          </p>
-        )}
+        <div className="flex items-baseline gap-4">
+          {port !== null && (
+            <p className="text-xs text-neutral-500">
+              SMTP on <code className="font-mono">127.0.0.1:{port}</code>
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={!hasEmails}
+            onClick={() => run(clearAll())}
+            className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            Clear all…
+          </button>
+        </div>
       </header>
+      {actionError !== null && (
+        <p
+          role="alert"
+          className="border-b border-neutral-200 px-4 py-2 text-xs text-red-600 dark:border-neutral-800 dark:text-red-400"
+        >
+          {actionError}
+        </p>
+      )}
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <InboxBody inbox={inbox} port={port} />
+        <InboxBody inbox={inbox} port={port} onDelete={(id) => run(deleteEmail(id))} />
       </main>
     </div>
   );
 }
 
-function InboxBody({ inbox, port }: { inbox: InboxState; port: number | null }) {
+function InboxBody({
+  inbox,
+  port,
+  onDelete,
+}: {
+  inbox: InboxState;
+  port: number | null;
+  onDelete: (id: number) => void;
+}) {
   switch (inbox.status) {
     case "loading":
       return null;
@@ -53,7 +94,7 @@ function InboxBody({ inbox, port }: { inbox: InboxState; port: number | null }) 
       return (
         <ul>
           {inbox.emails.map((email) => (
-            <EmailListItem key={email.id} email={email} />
+            <EmailListItem key={email.id} email={email} onDelete={() => onDelete(email.id)} />
           ))}
         </ul>
       );
@@ -100,11 +141,11 @@ function useSmtpPort(): number | null {
   return port;
 }
 
-function EmailListItem({ email }: { email: EmailRow }) {
+function EmailListItem({ email, onDelete }: { email: EmailRow; onDelete: () => void }) {
   const receivedAt = new Date(email.receivedAt);
 
   return (
-    <li className="border-b border-neutral-100 px-4 py-2.5 dark:border-neutral-800">
+    <li className="group border-b border-neutral-100 px-4 py-2.5 dark:border-neutral-800">
       <div className="flex items-baseline gap-3">
         <span className="min-w-0 flex-1 truncate font-medium">
           {email.sender ?? <span className="text-neutral-500 italic">(no sender)</span>}
@@ -116,6 +157,15 @@ function EmailListItem({ email }: { email: EmailRow }) {
         >
           {formatReceivedAt(receivedAt)}
         </time>
+        {/* Out of sight until the row is hovered or the button focused. */}
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label={`Delete ${email.subject ?? "this Email"}`}
+          className="shrink-0 rounded px-1.5 text-xs text-neutral-500 opacity-0 group-hover:opacity-100 hover:bg-neutral-100 hover:text-red-600 focus-visible:opacity-100 dark:hover:bg-neutral-800 dark:hover:text-red-400"
+        >
+          Delete
+        </button>
       </div>
       <div className="truncate">
         {email.subject ?? <span className="text-neutral-500 italic">(no subject)</span>}

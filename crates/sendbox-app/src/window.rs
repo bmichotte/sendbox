@@ -28,7 +28,7 @@ pub fn show(app: &AppHandle) {
     }
 }
 
-fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
+pub fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
     // The label of the window declared in `tauri.conf.json`.
     app.get_webview_window("main")
 }

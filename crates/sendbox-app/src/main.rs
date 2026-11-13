@@ -24,9 +24,13 @@ fn main() {
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
                 .build(),
         )
+        // Native confirmations, asked from Rust: the UI needs no permission.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
-            inbox::smtp_port
+            inbox::smtp_port,
+            inbox::delete_email,
+            inbox::clear_all
         ])
         .setup(|app| {
             // No Dock icon. `LSUIElement` in Info.plist avoids the flash at launch

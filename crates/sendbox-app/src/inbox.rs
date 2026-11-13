@@ -3,10 +3,18 @@
 
 use std::time::UNIX_EPOCH;
 
-use sendbox_core::{Config, CoreEvent, CoreHandle, EmailFilter, EmailSummary};
+use sendbox_core::{
+    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSelection, EmailSummary,
+};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tauri_plugin_dialog::{
+    DialogExt, MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
+};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::oneshot;
+
+use crate::window;
 
 /// Tells the UI to list the Inbox again.
 const INBOX_CHANGED: &str = "inbox-changed";
@@ -48,7 +56,8 @@ fn forward_events(app: AppHandle, core: &CoreHandle) {
         loop {
             match events.recv().await {
                 // Lagged: some events were missed, so the UI must re-list anyway.
-                Ok(CoreEvent::EmailCaptured(_)) | Err(RecvError::Lagged(_)) => {
+                Ok(CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
+                | Err(RecvError::Lagged(_)) => {
                     let _ = app.emit(INBOX_CHANGED, ());
                 }
                 Ok(_) => {}
@@ -100,4 +109,81 @@ pub async fn list_emails(core: State<'_, Core>) -> Result<Vec<EmailRow>, String>
 #[tauri::command]
 pub fn smtp_port(core: State<'_, Core>) -> Result<u16, String> {
     Ok(core.handle()?.smtp_port())
+}
+
+/// Deletes one Email. The UI hears that the Inbox changed.
+#[tauri::command]
+pub async fn delete_email(core: State<'_, Core>, id: i64) -> Result<(), String> {
+    core.handle()?
+        .delete_emails(EmailSelection::Ids(vec![EmailId(id)]))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Clear all from the window: asks for confirmation on the window, then
+/// deletes every Email. Returns whether the Inbox was cleared.
+#[tauri::command]
+pub async fn clear_all(window: WebviewWindow, core: State<'_, Core>) -> Result<bool, String> {
+    let core = core.handle()?;
+    let (answer, answered) = oneshot::channel();
+    clear_all_dialog(window.app_handle())
+        .parent(&window)
+        .show(move |confirmed| {
+            let _ = answer.send(confirmed);
+        });
+    if !answered.await.unwrap_or(false) {
+        return Ok(false);
+    }
+    core.delete_emails(EmailSelection::All)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+/// Clear all from the tray menu: asks for confirmation, then deletes every
+/// Email. Menu handlers run on the main thread, which the dialog needs, so
+/// this never waits for the answer.
+pub fn ask_to_clear_all(app: &AppHandle) {
+    // Choosing a tray menu item does not bring a menu-bar app to the front,
+    // so a dialog on its own could open behind other apps: show it on the
+    // Inbox window, which also lets the user see what is being cleared.
+    window::show(app);
+    let mut dialog = clear_all_dialog(app);
+    if let Some(window) = window::main_window(app) {
+        dialog = dialog.parent(&window);
+    }
+    let app = app.clone();
+    dialog.show(move |confirmed| {
+        if !confirmed {
+            return;
+        }
+        tauri::async_runtime::spawn(async move {
+            let cleared = match app.state::<Core>().handle() {
+                Ok(core) => core
+                    .delete_emails(EmailSelection::All)
+                    .await
+                    .map_err(|error| error.to_string()),
+                Err(reason) => Err(reason),
+            };
+            if let Err(reason) = cleared {
+                app.dialog()
+                    .message(format!("The Inbox could not be cleared: {reason}"))
+                    .kind(MessageDialogKind::Error)
+                    .show(|_| {});
+            }
+        });
+    });
+}
+
+/// The confirmation both Clear alls ask for, worded once.
+fn clear_all_dialog(app: &AppHandle) -> MessageDialogBuilder<tauri::Wry> {
+    app.dialog()
+        .message("Delete every Email in the Inbox? This cannot be undone.")
+        .title("Clear all Emails?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Clear all".to_string(),
+            "Cancel".to_string(),
+        ))
 }

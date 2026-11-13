@@ -1,6 +1,13 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { EmailDetailPane } from "./EmailDetail";
-import { type EmailRow, listEmails, onInboxChanged, smtpPort } from "./inbox";
+import {
+  clearAll,
+  deleteEmail,
+  type EmailRow,
+  listEmails,
+  onInboxChanged,
+  smtpPort,
+} from "./inbox";
 
 type InboxState =
   | { status: "loading" }
@@ -16,6 +23,20 @@ export function App() {
     inbox.status === "ready" && inbox.emails.some((email) => email.id === selected)
       ? selected
       : null;
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The list follows from the Inbox-changed event; only a failure needs showing.
+  const run = (action: Promise<unknown>) =>
+    action.then(
+      () => setActionError(null),
+      (reason: unknown) => setActionError(String(reason)),
+    );
+  const hasEmails = inbox.status === "ready" && inbox.emails.length > 0;
+  // Deleting the open Email, or clearing the Inbox, closes it.
+  const deleteOne = (id: number) =>
+    run(
+      deleteEmail(id).then(() => setSelected((current) => (current === id ? null : current))),
+    );
+  const clearInbox = () => run(clearAll().then((cleared) => cleared && setSelected(null)));
 
   return (
     <div className="flex h-screen flex-col bg-white text-sm text-neutral-900 dark:bg-neutral-900 dark:text-neutral-100">
@@ -28,12 +49,30 @@ export function App() {
             </span>
           )}
         </h1>
-        {port !== null && (
-          <p className="text-xs text-neutral-500">
-            SMTP on <code className="font-mono">127.0.0.1:{port}</code>
-          </p>
-        )}
+        <div className="flex items-baseline gap-4">
+          {port !== null && (
+            <p className="text-xs text-neutral-500">
+              SMTP on <code className="font-mono">127.0.0.1:{port}</code>
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={!hasEmails}
+            onClick={clearInbox}
+            className="rounded border border-neutral-300 px-2 py-0.5 text-xs hover:bg-neutral-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-neutral-700 dark:hover:bg-neutral-800"
+          >
+            Clear all…
+          </button>
+        </div>
       </header>
+      {actionError !== null && (
+        <p
+          role="alert"
+          className="border-b border-neutral-200 px-4 py-2 text-xs text-red-600 dark:border-neutral-800 dark:text-red-400"
+        >
+          {actionError}
+        </p>
+      )}
       <div className="flex min-h-0 flex-1">
         {/* With an Email open, the list narrows beside it, or hides on narrow windows. */}
         <main
@@ -43,7 +82,13 @@ export function App() {
               : "hidden min-h-0 overflow-y-auto border-r border-neutral-200 md:block md:w-80 md:shrink-0 lg:w-96 dark:border-neutral-800"
           }
         >
-          <InboxBody inbox={inbox} port={port} openId={openId} onOpen={setSelected} />
+          <InboxBody
+            inbox={inbox}
+            port={port}
+            openId={openId}
+            onOpen={setSelected}
+            onDelete={deleteOne}
+          />
         </main>
         {openId !== null && (
           <EmailDetailPane key={openId} id={openId} onClose={() => setSelected(null)} />
@@ -58,11 +103,13 @@ function InboxBody({
   port,
   openId,
   onOpen,
+  onDelete,
 }: {
   inbox: InboxState;
   port: number | null;
   openId: number | null;
   onOpen: (id: number) => void;
+  onDelete: (id: number) => void;
 }) {
   switch (inbox.status) {
     case "loading":
@@ -87,6 +134,7 @@ function InboxBody({
               email={email}
               open={email.id === openId}
               onOpen={() => onOpen(email.id)}
+              onDelete={() => onDelete(email.id)}
             />
           ))}
         </ul>
@@ -138,24 +186,29 @@ function EmailListItem({
   email,
   open,
   onOpen,
+  onDelete,
 }: {
   email: EmailRow;
   open: boolean;
   onOpen: () => void;
+  onDelete: () => void;
 }) {
   const receivedAt = new Date(email.receivedAt);
 
   return (
-    <li className="border-b border-neutral-100 dark:border-neutral-800">
+    // Delete sits beside the button that opens the Email, not inside it.
+    <li
+      className={`group flex items-baseline border-b border-neutral-100 dark:border-neutral-800 ${
+        open
+          ? "bg-neutral-100 dark:bg-neutral-800"
+          : "hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
+      }`}
+    >
       <button
         type="button"
         onClick={onOpen}
         aria-current={open || undefined}
-        className={`block w-full px-4 py-2.5 text-left ${
-          open
-            ? "bg-neutral-100 dark:bg-neutral-800"
-            : "hover:bg-neutral-50 dark:hover:bg-neutral-800/50"
-        }`}
+        className="block min-w-0 flex-1 py-2.5 pr-3 pl-4 text-left"
       >
         <div className="flex items-baseline gap-3">
           <span className="min-w-0 flex-1 truncate font-medium">
@@ -175,6 +228,15 @@ function EmailListItem({
         {email.to.length > 0 && (
           <div className="truncate text-xs text-neutral-500">To: {email.to.join(", ")}</div>
         )}
+      </button>
+      {/* Out of sight until the row is hovered or the button focused. */}
+      <button
+        type="button"
+        onClick={onDelete}
+        aria-label={`Delete ${email.subject ?? "this Email"}`}
+        className="mr-4 shrink-0 rounded px-1.5 text-xs text-neutral-500 opacity-0 group-hover:opacity-100 hover:bg-neutral-200 hover:text-red-600 focus-visible:opacity-100 dark:hover:bg-neutral-700 dark:hover:text-red-400"
+      >
+        Delete
       </button>
     </li>
   );

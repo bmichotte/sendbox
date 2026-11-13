@@ -5,9 +5,10 @@ use tauri::AppHandle;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-use crate::window;
+use crate::{inbox, window};
 
 const OPEN: &str = "open";
+const CLEAR_ALL: &str = "clear-all";
 const QUIT: &str = "quit";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -15,6 +16,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         app,
         &[
             &MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?,
+            // The ellipsis says a confirmation comes first.
+            &MenuItem::with_id(app, CLEAR_ALL, "Clear all…", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?,
         ],
@@ -25,6 +28,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             OPEN => window::show(app),
+            CLEAR_ALL => inbox::ask_to_clear_all(app),
             QUIT => app.exit(0),
             _ => {}
         })

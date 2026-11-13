@@ -25,12 +25,14 @@ fn main() {
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
                 .build(),
         )
-        // Save dialogs for attachments; only Rust shows them, so the window
-        // gets no dialog permission.
+        // Save dialogs for attachments and Clear all confirmations; only Rust
+        // shows them, so the window gets no dialog permission.
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
             inbox::smtp_port,
+            inbox::delete_email,
+            inbox::clear_all,
             detail::get_email,
             detail::save_attachment
         ])

@@ -71,6 +71,16 @@ export function smtpPort(): Promise<number> {
   return invoke("smtp_port");
 }
 
+/** Deletes one Email; the Inbox-changed event follows. */
+export function deleteEmail(id: number): Promise<void> {
+  return invoke("delete_email", { id });
+}
+
+/** Asks the user to confirm, then deletes every Email. Resolves to whether the Inbox was cleared. */
+export function clearAll(): Promise<boolean> {
+  return invoke("clear_all");
+}
+
 /** Calls `handler` whenever the Inbox changes, until the returned function is called. */
 export function onInboxChanged(handler: () => void): Promise<UnlistenFn> {
   return listen("inbox-changed", handler);

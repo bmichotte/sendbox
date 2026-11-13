@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, SubsecRound, Utc};
+use chrono::{DateTime, Utc};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
@@ -24,7 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::inbox::Inbox;
 use crate::listener::Serve;
-use crate::{CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView};
+use crate::{
+    Attachment, CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView, Header,
+};
 
 /// The path of the MCP endpoint, as in `http://127.0.0.1:1026/mcp`.
 const ENDPOINT: &str = "/mcp";
@@ -73,16 +75,37 @@ struct Tools {
     tool_router: ToolRouter<Self>,
 }
 
+/// The filters `list_emails`, `wait_for_email` and `delete_emails` share.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct ListParams {
+struct FilterParams {
     /// Only Emails whose sender (From header or envelope) contains this, ignoring case.
     from: Option<String>,
     /// Only Emails with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
     to: Option<String>,
     /// Only Emails whose subject contains this, ignoring case.
     subject: Option<String>,
-    /// Only Emails Captured at or after this time (RFC 3339).
+    /// Only Emails Captured after this time (RFC 3339): give an Email's date to leave it out.
     since: Option<DateTime<Utc>>,
+}
+
+impl FilterParams {
+    /// The Inbox filter these give, for only Unread Emails if `unread_only`.
+    fn into_filter(self, unread_only: bool) -> EmailFilter {
+        EmailFilter {
+            from: self.from,
+            to: self.to,
+            subject: self.subject,
+            since: self.since.map(SystemTime::from),
+            unread_only,
+            ..EmailFilter::default()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct ListParams {
+    #[serde(flatten)]
+    filters: FilterParams,
     /// Only Unread Emails.
     #[serde(default)]
     unread_only: bool,
@@ -139,18 +162,11 @@ struct GetParams {
 /// One Email as `get_email` shows it: everything but the attachments' bytes.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct Email {
-    id: i64,
-    /// The From header address, else the envelope sender.
-    from: Option<String>,
-    /// The To header addresses.
-    to: Vec<String>,
+    // What `list_emails` shows of it, then the rest.
+    #[serde(flatten)]
+    summary: Summary,
     /// The Cc header addresses.
     cc: Vec<String>,
-    subject: Option<String>,
-    /// When Sendbox Captured the Email.
-    date: DateTime<Utc>,
-    /// False while the Email is Unread.
-    read: bool,
     /// Who the sending app said the Email was from and to over SMTP; the
     /// recipients include Bcc.
     envelope: Envelope,
@@ -159,11 +175,11 @@ struct Email {
     /// The HTML body, if any.
     html: Option<String>,
     /// Every header field, in order, decoded.
-    headers: Vec<HeaderField>,
+    headers: Vec<Header>,
     /// Link targets in the HTML, then URLs in the text, each once.
     links: Vec<String>,
     /// What is attached (the content is not available over MCP).
-    attachments: Vec<AttachmentInfo>,
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -174,77 +190,43 @@ struct Envelope {
     recipients: Vec<String>,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct HeaderField {
-    name: String,
-    value: String,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct AttachmentInfo {
-    /// The file name, if the sender gave one.
-    name: Option<String>,
-    content_type: String,
-    /// Bytes, once decoded.
-    size: u64,
-}
-
 impl From<EmailView> for Email {
     fn from(view: EmailView) -> Self {
         let EmailView {
-            summary,
+            mut summary,
             text,
             html,
             // Inline images are attachment bytes, which agents never get.
             html_with_inline_images: _,
+            // Agents read the parsed Email; the raw source is for the window.
+            raw_source_text: _,
             headers,
             links,
             attachments,
         } = view;
+        // What the summary as listed leaves out, taken first.
+        let cc = std::mem::take(&mut summary.cc);
+        let envelope = Envelope {
+            sender: summary.envelope_sender.take(),
+            recipients: std::mem::take(&mut summary.envelope_recipients),
+        };
         Self {
-            id: summary.id.0,
-            from: summary.sender().map(str::to_owned),
-            date: to_date(summary.received_at),
-            read: summary.read,
-            envelope: Envelope {
-                sender: Some(summary.envelope_sender).filter(|sender| !sender.is_empty()),
-                recipients: summary.envelope_recipients,
-            },
-            to: summary.to,
-            cc: summary.cc,
-            subject: summary.subject,
+            summary: Summary::from(summary),
+            cc,
+            envelope,
             text,
             html,
-            headers: headers
-                .into_iter()
-                .map(|header| HeaderField {
-                    name: header.name,
-                    value: header.value,
-                })
-                .collect(),
+            headers,
             links,
-            attachments: attachments
-                .into_iter()
-                .map(|attachment| AttachmentInfo {
-                    name: attachment.name,
-                    content_type: attachment.content_type,
-                    size: attachment.size,
-                })
-                .collect(),
+            attachments,
         }
     }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct WaitParams {
-    /// Only an Email whose sender (From header or envelope) contains this, ignoring case.
-    from: Option<String>,
-    /// Only an Email with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
-    to: Option<String>,
-    /// Only an Email whose subject contains this, ignoring case.
-    subject: Option<String>,
-    /// Only an Email Captured at or after this time (RFC 3339).
-    since: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    filters: FilterParams,
     /// How long to wait for one, in seconds (default 30, at most 120).
     #[serde(default = "default_wait_seconds")]
     timeout_seconds: u64,
@@ -268,14 +250,8 @@ struct Waited {
 struct DeleteParams {
     /// Delete the Emails with these ids, as list_emails gives them.
     ids: Option<Vec<i64>>,
-    /// Delete the Emails whose sender (From header or envelope) contains this, ignoring case.
-    from: Option<String>,
-    /// Delete the Emails with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
-    to: Option<String>,
-    /// Delete the Emails whose subject contains this, ignoring case.
-    subject: Option<String>,
-    /// Delete the Emails Captured at or after this time (RFC 3339).
-    since: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    filters: FilterParams,
     /// Delete only Unread Emails.
     #[serde(default)]
     unread_only: bool,
@@ -289,14 +265,7 @@ impl DeleteParams {
     /// means, in exactly one way: deleting everything takes `all: true`,
     /// never an empty request, and a mix could be read more than one way.
     fn selection(self) -> Result<EmailSelection, String> {
-        let filter = EmailFilter {
-            from: self.from,
-            to: self.to,
-            subject: self.subject,
-            since: self.since.map(SystemTime::from),
-            unread_only: self.unread_only,
-            sender_tab: None,
-        };
+        let filter = self.filters.into_filter(self.unread_only);
         let filtered = filter != EmailFilter::default();
         match (self.ids, filtered, self.all) {
             (Some(ids), false, false) => {
@@ -321,9 +290,10 @@ struct Deleted {
     deleted: usize,
 }
 
-/// A time to the millisecond, which is all an agent needs to read or compare.
+/// A Capture time, to the millisecond as the Inbox keeps it: given back as
+/// `since`, it compares exactly.
 fn to_date(time: SystemTime) -> DateTime<Utc> {
-    DateTime::<Utc>::from(time).trunc_subsecs(3)
+    DateTime::<Utc>::from(time)
 }
 
 #[tool_router]
@@ -346,14 +316,7 @@ impl Tools {
         &self,
         Parameters(params): Parameters<ListParams>,
     ) -> Result<Json<EmailList>, ErrorData> {
-        let filter = EmailFilter {
-            from: params.from,
-            to: params.to,
-            subject: params.subject,
-            since: params.since.map(SystemTime::from),
-            unread_only: params.unread_only,
-            sender_tab: None,
-        };
+        let filter = params.filters.into_filter(params.unread_only);
         let emails = self
             .inbox
             .list(filter, Some(params.limit as usize))
@@ -413,14 +376,8 @@ impl Tools {
     ) -> Result<CallToolResult, String> {
         let timeout = params.timeout_seconds.min(MAX_WAIT_SECONDS);
         let deadline = Instant::now() + Duration::from_secs(timeout);
-        let filter = EmailFilter {
-            from: params.from,
-            to: params.to,
-            subject: params.subject,
-            since: params.since.map(SystemTime::from),
-            unread_only: true,
-            sender_tab: None,
-        };
+        // A wait only ever gets an Unread Email.
+        let filter = params.filters.into_filter(true);
         // Subscribe before looking in the Inbox, so an Email Captured in
         // between is either found there or announced by an event.
         let mut events = self.inbox.subscribe();

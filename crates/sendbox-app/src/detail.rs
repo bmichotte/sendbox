@@ -26,18 +26,13 @@ pub struct EmailDetail {
     text: Option<String>,
     /// The HTML body with its inline images embedded, ready for the frame.
     html: Option<String>,
-    headers: Vec<HeaderField>,
+    headers: Vec<Header>,
     attachments: Vec<AttachmentInfo>,
-    /// The raw source as text; bytes that are not UTF-8 show as U+FFFD.
+    /// The raw source as text, every byte kept (see the core's view).
     raw_source: String,
 }
 
-#[derive(Serialize)]
-pub struct HeaderField {
-    name: String,
-    value: String,
-}
-
+/// The core's [`Attachment`], in the UI's camelCase.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInfo {
@@ -47,27 +42,24 @@ pub struct AttachmentInfo {
 }
 
 impl EmailDetail {
-    fn new(view: EmailView, raw_source: &[u8]) -> Self {
+    fn new(view: EmailView) -> Self {
         let EmailView {
             summary,
             text,
             html_with_inline_images,
             headers,
             attachments,
+            raw_source_text,
             ..
         } = view;
         Self {
             cc: summary.cc.clone(),
-            envelope_sender: Some(summary.envelope_sender.clone())
-                .filter(|sender| !sender.is_empty()),
+            envelope_sender: summary.envelope_sender.clone(),
             envelope_recipients: summary.envelope_recipients.clone(),
             row: EmailRow::from(summary),
             text,
             html: html_with_inline_images,
-            headers: headers
-                .into_iter()
-                .map(|Header { name, value }| HeaderField { name, value })
-                .collect(),
+            headers,
             attachments: attachments
                 .into_iter()
                 .map(
@@ -82,7 +74,7 @@ impl EmailDetail {
                     },
                 )
                 .collect(),
-            raw_source: String::from_utf8_lossy(raw_source).into_owned(),
+            raw_source: raw_source_text,
         }
     }
 }
@@ -96,15 +88,11 @@ pub async fn get_email(core: State<'_, Core>, id: i64) -> Result<EmailDetail, St
     core.mark_read(id)
         .await
         .map_err(|error| error.to_string())?;
-    let view = core.email(id).await.map_err(|error| error.to_string())?;
-    let raw_source = core
-        .raw_source(id)
+    core.email(id)
         .await
-        .map_err(|error| error.to_string())?;
-    match (view, raw_source) {
-        (Some(view), Some(raw_source)) => Ok(EmailDetail::new(view, &raw_source)),
-        _ => Err("This Email is no longer in the Inbox.".to_owned()),
-    }
+        .map_err(|error| error.to_string())?
+        .map(EmailDetail::new)
+        .ok_or_else(|| "This Email is no longer in the Inbox.".to_owned())
 }
 
 /// Asks where to save attachment `index` of Email `email_id`, then writes

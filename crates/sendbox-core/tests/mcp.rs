@@ -173,7 +173,7 @@ async fn the_to_filter_matches_to_cc_and_envelope_recipients_so_bcc_is_found() {
 }
 
 #[tokio::test]
-async fn since_lists_only_the_emails_captured_from_that_time_on() {
+async fn since_lists_only_the_emails_captured_after_that_time() {
     let core = TestCore::start().await;
     let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
     smtp.capture(
@@ -182,8 +182,10 @@ async fn since_lists_only_the_emails_captured_from_that_time_on() {
         "Subject: Before\r\n\r\nHi\r\n",
     )
     .await;
+    // Capture times are to the millisecond: keep a whole one on each side.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let since = DateTime::<Utc>::from(SystemTime::now());
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     for subject in ["After 1", "After 2"] {
         let raw = format!("Subject: {subject}\r\n\r\nHi\r\n");
         smtp.capture("app@acme.test", &["a@example.com"], &raw)
@@ -203,6 +205,28 @@ async fn since_lists_only_the_emails_captured_from_that_time_on() {
         .call("list_emails", json!({ "since": "yesterday" }))
         .await;
     assert_eq!(not_a_time.is_error, Some(true), "since must be RFC 3339");
+}
+
+#[tokio::test]
+async fn since_an_emails_own_date_lists_only_the_emails_captured_after_it() {
+    let core = TestCore::start().await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    for subject in ["First", "Second"] {
+        let raw = format!("Subject: {subject}\r\n\r\nHi\r\n");
+        smtp.capture("app@acme.test", &["a@example.com"], &raw)
+            .await;
+        // Dates are to the millisecond: each Email gets one of its own.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let agent = core.agent().await;
+    let emails = agent.list_emails(json!({})).await;
+    let (second_date, first_date) = (&emails[0]["date"], &emails[1]["date"]);
+
+    let after_first = agent.list_emails(json!({ "since": first_date })).await;
+    let after_second = agent.list_emails(json!({ "since": second_date })).await;
+
+    assert_eq!(subjects(&after_first), ["Second"]);
+    assert!(after_second.is_empty(), "{after_second:?}");
 }
 
 #[tokio::test]

@@ -50,6 +50,8 @@ The agent can list Emails (`list_emails`, filtered by sender, recipient, subject
 
 To drive a flow end to end, the agent makes your app send an Email (a sign-up, a password reset), then calls `wait_for_email` with the same filters: it gets the oldest matching Unread Email already there, or else the next one your app sends, waiting 30 s by default (up to 120 s) before saying no Email was received. Like reading, waiting marks the Email it returns read, so the next wait gets the next Email.
 
+To start a test from a known Inbox, the agent deletes Emails with `delete_emails`: by their ids, by the same filters as `list_emails`, or all of them with `all: true`.
+
 ## Development
 
 Requirements: Rust (stable) and Node 24.

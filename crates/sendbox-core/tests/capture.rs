@@ -1,6 +1,6 @@
 mod common;
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use common::{STEP_TIMEOUT, SmtpClient, TestCore, send_with_lettre};
 use lettre::Message;
@@ -24,11 +24,13 @@ async fn an_email_sent_with_lettre_is_captured_into_the_inbox() {
     let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     let email = &emails[0];
-    assert_eq!(email.envelope_sender, "app@acme.test");
+    assert_eq!(email.envelope_sender.as_deref(), Some("app@acme.test"));
     assert_eq!(email.envelope_recipients, ["alice@example.com"]);
     assert_eq!(email.subject.as_deref(), Some("Welcome aboard"));
     assert_eq!(email.size, sent_size as u64);
-    assert!(email.received_at >= before && email.received_at <= SystemTime::now());
+    // Capture times are to the millisecond.
+    let before = before - Duration::from_millis(1);
+    assert!(email.received_at > before && email.received_at <= SystemTime::now());
 }
 
 #[tokio::test]
@@ -113,7 +115,7 @@ async fn several_emails_on_one_connection_are_each_captured_newest_first() {
         .map(|email| {
             (
                 email.subject.as_deref().unwrap(),
-                email.envelope_sender.as_str(),
+                email.envelope_sender.as_deref().unwrap(),
                 email.envelope_recipients.clone(),
             )
         })
@@ -155,7 +157,7 @@ async fn rset_abandons_the_transaction_in_progress() {
     assert_eq!(reply.code, 250);
     let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0].envelope_sender, "kept@acme.test");
+    assert_eq!(emails[0].envelope_sender.as_deref(), Some("kept@acme.test"));
     assert_eq!(emails[0].envelope_recipients, ["kept@example.com"]);
 }
 
@@ -236,7 +238,10 @@ async fn the_list_shows_the_from_and_to_header_addresses_apart_from_the_envelope
     let email = &core.inbox().await[0];
     assert_eq!(email.from.as_deref(), Some("shop@acme.test"));
     assert_eq!(email.to, ["alice@example.com", "bob@example.com"]);
-    assert_eq!(email.envelope_sender, "bounces@mailer.test");
+    assert_eq!(
+        email.envelope_sender.as_deref(),
+        Some("bounces@mailer.test")
+    );
 }
 
 #[tokio::test]

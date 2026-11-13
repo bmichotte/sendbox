@@ -3,29 +3,9 @@
 
 mod common;
 
-use common::{STEP_TIMEOUT, SmtpClient, TestCore};
-use sendbox_core::{CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary};
+use common::{TestCore, capture, next_event, subjects};
+use sendbox_core::{CoreEvent, EmailFilter, EmailId, EmailSelection};
 use serde_json::json;
-use tokio::sync::broadcast;
-use tokio::time::timeout;
-
-/// Captures one Email per (subject, recipient), oldest first, and returns
-/// their ids newest first.
-async fn capture(core: &TestCore, emails: &[(&str, &str)]) -> Vec<EmailId> {
-    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
-    for (subject, recipient) in emails {
-        let raw = format!("From: app@acme.test\r\nSubject: {subject}\r\n\r\nHi\r\n");
-        smtp.capture("app@acme.test", &[recipient], &raw).await;
-    }
-    core.inbox().await.iter().map(|email| email.id).collect()
-}
-
-fn subjects(emails: &[EmailSummary]) -> Vec<&str> {
-    emails
-        .iter()
-        .map(|email| email.subject.as_deref().expect("a subject"))
-        .collect()
-}
 
 #[tokio::test]
 async fn deleting_emails_by_id_removes_them_for_good_and_says_how_many_were_deleted() {
@@ -94,14 +74,6 @@ async fn clearing_all_empties_the_inbox_and_capture_goes_on() {
     assert!(core.inbox().await.is_empty());
     capture(&core, &[("Three", "c@example.com")]).await;
     assert_eq!(subjects(&core.inbox().await), ["Three"]);
-}
-
-/// The next event, failing the test if none comes in time.
-async fn next_event(events: &mut broadcast::Receiver<CoreEvent>) -> CoreEvent {
-    timeout(STEP_TIMEOUT, events.recv())
-        .await
-        .expect("an event comes in time")
-        .expect("the core is still running")
 }
 
 #[tokio::test]

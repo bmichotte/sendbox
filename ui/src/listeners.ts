@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
+import { stopListening } from "./live";
 
 /** Mirrors `Status` in the shell. */
 export type ListenerStatus =
@@ -35,13 +36,13 @@ export function useListeners(): Listeners | null {
   useEffect(() => {
     let active = true;
     let changes = 0;
-    const stopListening = onListenersChanged((next) => {
+    const listening = onListenersChanged((next) => {
       changes++;
       if (active) setListeners(next);
     });
     // Asked once listening, so that no change slips in between; a change
     // heard while asking is newer than the answer.
-    stopListening
+    listening
       .then(() => {
         const heard = changes;
         return getListeners().then((current) => {
@@ -51,10 +52,7 @@ export function useListeners(): Listeners | null {
       .catch(() => {});
     return () => {
       active = false;
-      stopListening.then(
-        (stop) => stop(),
-        () => {},
-      );
+      stopListening(listening);
     };
   }, []);
 

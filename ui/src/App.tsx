@@ -7,19 +7,11 @@ import {
   listEmails,
   listTabs,
   onInboxChanged,
-  type Search,
   type SenderTabKey,
   type Tabs,
 } from "./inbox";
 import { useListeners } from "./listeners";
-
-/** Something loaded from the shell, and loaded again whenever the Inbox changes. */
-type Live<T> =
-  | { status: "loading" }
-  | { status: "ready"; value: T }
-  | { status: "failed"; reason: string };
-
-const NO_SEARCH: Search = { from: "", to: "", subject: "" };
+import { type Loaded, stopListening } from "./live";
 
 export function App() {
   const tabs = useLive(listTabs, "tabs");
@@ -33,7 +25,7 @@ export function App() {
   ) {
     setTab(null);
   }
-  const [search, setSearch] = useState<Search>(NO_SEARCH);
+  const [search, setSearch] = useState("");
   const emails = useLive(() => listEmails(tab, search), JSON.stringify([tab, search]));
   const smtp = useListeners()?.smtp ?? null;
   const port = smtp?.state === "running" ? smtp.port : null;
@@ -197,29 +189,18 @@ function TabButton({
   );
 }
 
-/** Narrows the current tab by sender, recipient and subject. */
-function SearchBar({ search, onChange }: { search: Search; onChange: (search: Search) => void }) {
-  const fields: { field: keyof Search; label: string }[] = [
-    { field: "from", label: "From" },
-    { field: "to", label: "To" },
-    { field: "subject", label: "Subject" },
-  ];
+/** Narrows the current tab to the Emails whose sender, recipients or subject contain the search. */
+function SearchBar({ search, onChange }: { search: string; onChange: (search: string) => void }) {
   return (
-    <div
-      role="search"
-      className="flex gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800"
-    >
-      {fields.map(({ field, label }) => (
-        <input
-          key={field}
-          type="search"
-          aria-label={`Search by ${label.toLowerCase()}`}
-          placeholder={label}
-          value={search[field]}
-          onChange={(event) => onChange({ ...search, [field]: event.target.value })}
-          className="min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-2 py-1 text-xs placeholder:text-neutral-400 dark:border-neutral-700"
-        />
-      ))}
+    <div role="search" className="border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
+      <input
+        type="search"
+        aria-label="Search by sender, recipient or subject"
+        placeholder="Search sender, recipient or subject"
+        value={search}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded border border-neutral-300 bg-transparent px-2 py-1 text-xs placeholder:text-neutral-400 dark:border-neutral-700"
+      />
     </div>
   );
 }
@@ -232,7 +213,7 @@ function InboxBody({
   onOpen,
   onDelete,
 }: {
-  emails: Live<EmailRow[]>;
+  emails: Loaded<EmailRow[]>;
   /** Whether the whole Inbox is empty, not only the list a tab or a search narrows. */
   inboxIsEmpty: boolean;
   port: number | null;
@@ -278,32 +259,29 @@ function InboxBody({
  * What `load` answers, loaded again whenever the shell says the Inbox changed, and whenever `key`
  * changes: `key` names what `load` loads, so a new key means a new `load`.
  */
-function useLive<T>(load: () => Promise<T>, key: string): Live<T> {
-  const [live, setLive] = useState<Live<T>>({ status: "loading" });
+function useLive<T>(load: () => Promise<T>, key: string): Loaded<T> {
+  const [live, setLive] = useState<Loaded<T>>({ status: "loading" });
 
   // `key` stands for `load`, a new function on every render.
   useEffect(() => {
     let active = true;
     let latest = 0;
-    const failed = (reason: unknown): Live<T> => ({ status: "failed", reason: String(reason) });
+    const failed = (reason: unknown): Loaded<T> => ({ status: "failed", reason: String(reason) });
     const refresh = () => {
       const request = ++latest;
       // Only the newest answer counts: an older, slower one would be stale.
-      const settle = (next: Live<T>) => active && request === latest && setLive(next);
+      const settle = (next: Loaded<T>) => active && request === latest && setLive(next);
       load().then(
         (value) => settle({ status: "ready", value }),
         (reason: unknown) => settle(failed(reason)),
       );
     };
-    const stopListening = onInboxChanged(refresh);
+    const listening = onInboxChanged(refresh);
     // Load once listening, so that no Capture slips in between.
-    stopListening.then(refresh, (reason: unknown) => active && setLive(failed(reason)));
+    listening.then(refresh, (reason: unknown) => active && setLive(failed(reason)));
     return () => {
       active = false;
-      stopListening.then(
-        (stop) => stop(),
-        () => {},
-      );
+      stopListening(listening);
     };
   }, [key]);
 

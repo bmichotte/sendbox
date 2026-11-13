@@ -1,6 +1,6 @@
 //! Sender tabs: the window splits the Inbox into one tab per sender, next to
-//! "All", each with its Unread count, and searches the current tab with the
-//! same filters agents use in `list_emails`.
+//! "All", each with its Unread count, and its search box narrows the current
+//! tab to the Emails whose sender, recipients or subject contain the search.
 
 mod common;
 
@@ -152,17 +152,22 @@ async fn a_sender_tab_comes_with_its_first_email_and_goes_with_its_last() {
     );
 }
 
+/// The subjects of the Emails `filter` matches, newest first.
+async fn subjects_matching(core: &TestCore, filter: EmailFilter) -> Vec<String> {
+    let emails = core.list_emails(&filter, None).await.expect("the list");
+    emails
+        .into_iter()
+        .map(|email| email.subject.expect("a subject"))
+        .collect()
+}
+
 /// The subjects of the Emails in `tab` that `filter` also matches, newest first.
 async fn subjects_in(core: &TestCore, tab: SenderTabKey, filter: EmailFilter) -> Vec<String> {
     let filter = EmailFilter {
         sender_tab: Some(tab),
         ..filter
     };
-    let emails = core.list_emails(&filter, None).await.expect("the list");
-    emails
-        .into_iter()
-        .map(|email| email.subject.expect("a subject"))
-        .collect()
+    subjects_matching(core, filter).await
 }
 
 #[tokio::test]
@@ -194,46 +199,98 @@ async fn the_list_can_show_only_the_emails_of_one_sender_tab() {
     assert_eq!(no_sender, ["Bounce"]);
 }
 
+/// What the search box filters with when it holds `text`.
+fn search(text: &str) -> EmailFilter {
+    EmailFilter {
+        search: Some(text.to_owned()),
+        ..EmailFilter::default()
+    }
+}
+
 #[tokio::test]
-async fn searching_a_sender_tab_matches_from_to_and_subject_ignoring_case_in_any_script() {
+async fn a_search_matches_the_sender_a_recipient_or_the_subject() {
+    let core = TestCore::start().await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    for (envelope_sender, recipient, headers) in [
+        (
+            "shop@acme.test",
+            "bob@example.com",
+            "From: Shop <shop@acme.test>\r\nTo: bob@example.com\r\nSubject: Your receipt",
+        ),
+        (
+            "news@other.test",
+            "bob@example.com",
+            "From: news@other.test\r\nTo: team@acme.test\r\nSubject: Weekly news",
+        ),
+        (
+            "app@other.test",
+            "bob@example.com",
+            "From: app@other.test\r\nSubject: Welcome to Acme",
+        ),
+        (
+            "app@other.test",
+            "audit@acme.test",
+            "From: app@other.test\r\nTo: bob@example.com\r\nSubject: Bcc",
+        ),
+        ("bounces@acme.test", "bob@example.com", "Subject: Bounce"),
+        (
+            "app@other.test",
+            "bob@example.com",
+            "From: Acme <app@other.test>\r\nCc: Acme <bob@example.com>\r\nSubject: Names",
+        ),
+    ] {
+        let raw = format!("{headers}\r\n\r\nHi\r\n");
+        smtp.capture(envelope_sender, &[recipient], &raw).await;
+    }
+
+    assert_eq!(
+        subjects_matching(&core, search("acme")).await,
+        [
+            "Bounce",
+            "Bcc",
+            "Welcome to Acme",
+            "Weekly news",
+            "Your receipt"
+        ],
+        "From, envelope sender, envelope recipient, subject, To: names don't count"
+    );
+}
+
+#[tokio::test]
+async fn searching_a_sender_tab_ignores_case_in_any_script_and_never_leaves_the_tab() {
     let core = TestCore::start().await;
     let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
     for (from, to, subject) in [
         (
             "Café Shop <shop@acme.test>",
             "zoë@example.com",
-            "Votre CAFÉ est prêt",
+            "Your receipt",
         ),
-        ("shop@acme.test", "bob@example.com", "Votre café est prêt"),
-        ("shop@acme.test", "ZOË@example.com", "Your receipt"),
+        ("shop@acme.test", "bob@example.com", "Votre CAFÉ est prêt"),
+        ("shop@acme.test", "bob@example.com", "Shipped"),
         ("news@acme.test", "zoë@example.com", "Café news"),
     ] {
         let raw = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\nHi\r\n");
         smtp.capture("bounces@mailer.test", &[to], &raw).await;
     }
     let shop = || address("shop@acme.test");
-    let search = |from: Option<&str>, to: Option<&str>, subject: Option<&str>| EmailFilter {
-        from: from.map(str::to_owned),
-        to: to.map(str::to_owned),
-        subject: subject.map(str::to_owned),
-        ..EmailFilter::default()
-    };
 
     assert_eq!(
-        subjects_in(&core, shop(), search(None, None, Some("café"))).await,
-        ["Votre café est prêt", "Votre CAFÉ est prêt"]
+        subjects_in(&core, shop(), search("ZOË")).await,
+        ["Your receipt"]
     );
     assert_eq!(
-        subjects_in(&core, shop(), search(None, Some("Zoë@"), None)).await,
-        ["Your receipt", "Votre CAFÉ est prêt"]
-    );
-    assert_eq!(
-        subjects_in(&core, shop(), search(None, Some("zoë"), Some("café"))).await,
+        subjects_in(&core, shop(), search("café")).await,
         ["Votre CAFÉ est prêt"],
-        "the search fields narrow the tab together"
+        "the display name does not count"
     );
     assert_eq!(
-        subjects_in(&core, shop(), search(Some("NEWS@"), None, None)).await,
+        subjects_in(&core, shop(), search("")).await,
+        ["Shipped", "Votre CAFÉ est prêt", "Your receipt"],
+        "an empty search matches every Email of the tab"
+    );
+    assert_eq!(
+        subjects_in(&core, shop(), search("news")).await,
         Vec::<String>::new(),
         "the search never leaves the tab"
     );

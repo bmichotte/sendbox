@@ -4,12 +4,10 @@
 
 mod common;
 
-use common::{STEP_TIMEOUT, SmtpClient, TestCore, test_config};
+use common::{SmtpClient, TestCore, next_event, test_config};
 use sendbox_core::{Config, CoreEvent, EmailId, EmailSelection};
 use serde_json::json;
 use tempfile::TempDir;
-use tokio::sync::broadcast;
-use tokio::time::timeout;
 
 /// Captures one Email per subject, oldest first, and returns their ids
 /// newest first.
@@ -46,14 +44,6 @@ async fn the_handle_counts_the_unread_emails_as_they_are_captured_read_and_delet
         1,
         "deleting a read Email and an Unread one leaves one Unread"
     );
-}
-
-/// The next event, failing the test if none comes in time.
-async fn next_event(events: &mut broadcast::Receiver<CoreEvent>) -> CoreEvent {
-    timeout(STEP_TIMEOUT, events.recv())
-        .await
-        .expect("an event comes in time")
-        .expect("the core is still running")
 }
 
 #[tokio::test]

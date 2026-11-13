@@ -1,32 +1,62 @@
-//! Draws the Unread count onto the tray icon at runtime, for Windows, which
-//! has no text next to tray icons. Plain RGBA pixels, no image library: a
-//! red pill in the bottom-right corner with the count in white 3x5 digits.
+//! Draws badges onto the tray icon at runtime: the error badge while a port
+//! is in use, and, for Windows, which has no text next to tray icons, the
+//! Unread count. Plain RGBA pixels, no image library.
 
 use tauri::image::Image;
 
+/// A fully transparent pixel.
+pub const CLEAR: [u8; 4] = [0; 4];
 const RED: [u8; 4] = [0xE5, 0x48, 0x4D, 0xFF];
 const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 
-/// `icon` with `count` drawn on it; counts above 99 show as "99+", which
-/// is all a 16 px icon has room for.
+/// `icon` with a round badge in its bottom-right corner, `fill` with a `mark`
+/// coloured "!", set apart from the icon by a transparent ring.
+pub fn with_error_badge(icon: &Image<'_>, fill: [u8; 4], mark: [u8; 4]) -> Image<'static> {
+    let mut canvas = Canvas::of(icon);
+    let size = canvas.width.min(canvas.height) as f32;
+    let radius = size * 0.26;
+    let ring = size * 0.06;
+    let center_x = canvas.width as f32 - radius;
+    let center_y = canvas.height as f32 - radius;
+    for y in 0..canvas.height {
+        for x in 0..canvas.width {
+            let (dx, dy) = (x as f32 + 0.5 - center_x, y as f32 + 0.5 - center_y);
+            let distance = dx.hypot(dy);
+            if distance <= radius {
+                let on_mark = on_exclamation_mark(dx, dy, radius);
+                canvas.put(x, y, if on_mark { mark } else { fill });
+            } else if distance <= radius + ring {
+                canvas.put(x, y, CLEAR);
+            }
+        }
+    }
+    canvas.into_image()
+}
+
+/// Whether the point `(dx, dy)` from the centre of a badge of `radius` is on
+/// its "!": a bar above a dot.
+fn on_exclamation_mark(dx: f32, dy: f32, radius: f32) -> bool {
+    let half_width = radius * 0.17;
+    let bar = -radius * 0.62..=radius * 0.16;
+    let dot = radius * 0.34..=radius * 0.34 + 2.0 * half_width;
+    dx.abs() <= half_width && (bar.contains(&dy) || dot.contains(&dy))
+}
+
+/// `icon` with `count` drawn on it in a red pill in the bottom-right corner,
+/// in white 3x5 digits; counts above 99 show as "99+", which is all a 16 px
+/// icon has room for.
+#[cfg_attr(
+    target_os = "macos",
+    allow(dead_code, reason = "macOS shows the count as text")
+)]
 pub fn with_count(icon: &Image<'_>, count: usize) -> Image<'static> {
     let text = if count > 99 {
         "99+".to_owned()
     } else {
         count.to_string()
     };
-    with_badge(icon, &text)
-}
-
-fn with_badge(icon: &Image<'_>, text: &str) -> Image<'static> {
-    let (width, height) = (icon.width(), icon.height());
-    let mut rgba = icon.rgba().to_vec();
-    let mut put = |x: u32, y: u32, pixel: [u8; 4]| {
-        if x < width && y < height {
-            let at = ((y * width + x) * 4) as usize;
-            rgba[at..at + 4].copy_from_slice(&pixel);
-        }
-    };
+    let mut canvas = Canvas::of(icon);
+    let (width, height) = (canvas.width, canvas.height);
 
     // One font pixel per 16 icon pixels: 1 at 16x16, 2 at 32x32.
     let scale = (width.min(height) / 16).max(1);
@@ -45,7 +75,7 @@ fn with_badge(icon: &Image<'_>, text: &str) -> Image<'static> {
             let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
             let nearest_x = cx.clamp(radius, badge_width as f32 - radius);
             if (cx - nearest_x).powi(2) + (cy - radius).powi(2) <= radius * radius {
-                put(left + x, top + y, RED);
+                canvas.put(left + x, top + y, RED);
             }
         }
     }
@@ -60,7 +90,7 @@ fn with_badge(icon: &Image<'_>, text: &str) -> Image<'static> {
                 }
                 for dy in 0..scale {
                     for dx in 0..scale {
-                        put(
+                        canvas.put(
                             glyph_left + column * scale + dx,
                             top + padding + row * scale + dy,
                             WHITE,
@@ -70,7 +100,7 @@ fn with_badge(icon: &Image<'_>, text: &str) -> Image<'static> {
             }
         }
     }
-    Image::new_owned(rgba, width, height)
+    canvas.into_image()
 }
 
 /// A 3x5 pixel glyph: one byte per row, its 3 low bits the columns, the
@@ -89,5 +119,34 @@ fn glyph(c: char) -> [u8; 5] {
         '9' => [0b111, 0b101, 0b111, 0b001, 0b111],
         '+' => [0b000, 0b010, 0b111, 0b010, 0b000],
         _ => [0; 5],
+    }
+}
+
+/// A copy of an icon's pixels to draw on.
+struct Canvas {
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+impl Canvas {
+    fn of(icon: &Image<'_>) -> Self {
+        Self {
+            rgba: icon.rgba().to_vec(),
+            width: icon.width(),
+            height: icon.height(),
+        }
+    }
+
+    /// Sets the pixel at `(x, y)`; one outside the icon is left out.
+    fn put(&mut self, x: u32, y: u32, pixel: [u8; 4]) {
+        if x < self.width && y < self.height {
+            let at = ((y * self.width + x) * 4) as usize;
+            self.rgba[at..at + 4].copy_from_slice(&pixel);
+        }
+    }
+
+    fn into_image(self) -> Image<'static> {
+        Image::new_owned(self.rgba, self.width, self.height)
     }
 }

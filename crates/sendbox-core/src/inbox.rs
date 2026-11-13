@@ -50,7 +50,8 @@ const SUMMARY_COLUMNS: &str = "id, received_at_ns, envelope_sender, envelope_rec
 
 /// The SMTP envelope of one Email: who the client said it was from and to.
 pub(crate) struct Envelope {
-    pub(crate) sender: String,
+    /// `None` for a null sender (`MAIL FROM:<>`).
+    pub(crate) sender: Option<String>,
     pub(crate) recipients: Vec<String>,
 }
 
@@ -92,9 +93,10 @@ impl Inbox {
         self.events.subscribe()
     }
 
-    /// Tells subscribers about something that happened outside the Inbox:
-    /// they all listen here.
+    /// Tells subscribers about something that happened, in the Inbox or
+    /// outside it: they all listen here.
     pub(crate) fn notify(&self, event: CoreEvent) {
+        // No subscriber is not an error: nobody is watching yet.
         let _ = self.events.send(event);
     }
 
@@ -106,7 +108,7 @@ impl Inbox {
         envelope: Envelope,
         raw_source: Vec<u8>,
     ) -> Result<EmailSummary, Error> {
-        let received_at = SystemTime::now();
+        let received_at = to_the_millisecond(SystemTime::now());
         let headers = SummaryHeaders::parse(&raw_source);
         let retention_limit = Arc::clone(&self.retention_limit);
         let email = self
@@ -121,7 +123,7 @@ impl Inbox {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         to_unix_nanos(received_at),
-                        envelope.sender,
+                        encode_sender(envelope.sender.as_deref()),
                         encode_addresses(&envelope.recipients),
                         headers.from,
                         encode_addresses(&headers.to),
@@ -148,8 +150,7 @@ impl Inbox {
                 })
             })
             .await?;
-        // No subscriber is not an error: nobody is watching yet.
-        let _ = self.events.send(CoreEvent::EmailCaptured(email.clone()));
+        self.notify(CoreEvent::EmailCaptured(email.clone()));
         Ok(email)
     }
 
@@ -164,7 +165,7 @@ impl Inbox {
             })
             .await?;
         if pruned > 0 {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(())
     }
@@ -208,7 +209,7 @@ impl Inbox {
             })
             .await?;
         if marked {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(oldest)
     }
@@ -256,7 +257,7 @@ impl Inbox {
     pub(crate) async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         let marked = self.with_db(move |db| mark_unread_read(db, id)).await?;
         if marked {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(())
     }
@@ -280,7 +281,7 @@ impl Inbox {
             })
             .await?;
         if deleted > 0 {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(deleted)
     }
@@ -419,7 +420,7 @@ fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {
     Ok(EmailSummary {
         id: EmailId(row.get(0)?),
         received_at: from_unix_nanos(row.get(1)?),
-        envelope_sender: row.get(2)?,
+        envelope_sender: decode_sender(row.get(2)?),
         envelope_recipients: decode_addresses(&row.get::<_, String>(3)?),
         from: row.get(4)?,
         to: decode_addresses(&row.get::<_, String>(5)?),
@@ -441,23 +442,23 @@ struct SummaryHeaders {
 
 impl SummaryHeaders {
     fn parse(raw_source: &[u8]) -> Self {
-        let Some(message) = mail_parser::MessageParser::default().parse_headers(raw_source) else {
+        let Some(parsed) = mail_parser::MessageParser::default().parse_headers(raw_source) else {
             return Self::default();
         };
         Self {
-            from: message
+            from: parsed
                 .from()
                 .and_then(|from| from.first())
                 .and_then(|mailbox| mailbox.address())
                 .map(str::to_owned),
-            to: addresses(message.to()),
-            cc: addresses(message.cc()),
-            subject: message.subject().map(str::to_owned),
+            to: addresses(parsed.to()),
+            cc: addresses(parsed.cc()),
+            subject: parsed.subject().map(str::to_owned),
         }
     }
 }
 
-/// Every mailbox address in an address header, in order (names dropped).
+/// Every address in an address header, in order (display names dropped).
 fn addresses(list: Option<mail_parser::AddressList<'_>>) -> Vec<String> {
     list.map(|list| {
         list.mailboxes()
@@ -477,6 +478,15 @@ async fn blocking<T: Send + 'static>(
     }
 }
 
+// A null sender is stored as an empty address, which no other sender has.
+fn encode_sender(sender: Option<&str>) -> &str {
+    sender.unwrap_or_default()
+}
+
+fn decode_sender(encoded: String) -> Option<String> {
+    (!encoded.is_empty()).then_some(encoded)
+}
+
 // Addresses never contain a line break (headers are unfolded when parsed),
 // so one per line is unambiguous.
 fn encode_addresses(addresses: &[String]) -> String {
@@ -494,6 +504,14 @@ fn to_unix_nanos(time: SystemTime) -> i64 {
         .map_or(0, |since| since.as_nanos() as i64)
 }
 
+/// Emails Captured before Capture times were kept to the millisecond have
+/// more precision: reading drops it.
 fn from_unix_nanos(nanos: i64) -> SystemTime {
-    UNIX_EPOCH + Duration::from_nanos(nanos.max(0) as u64)
+    to_the_millisecond(UNIX_EPOCH + Duration::from_nanos(nanos.max(0) as u64))
+}
+
+/// `time` without its fraction of a millisecond.
+fn to_the_millisecond(time: SystemTime) -> SystemTime {
+    let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    UNIX_EPOCH + Duration::from_millis(since_epoch.as_millis() as u64)
 }

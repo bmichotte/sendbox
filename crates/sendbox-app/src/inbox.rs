@@ -13,10 +13,9 @@ use tauri_plugin_dialog::{
     DialogExt, MessageDialogBuilder, MessageDialogButtons, MessageDialogKind,
 };
 use tokio::sync::broadcast::Receiver;
-use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::oneshot;
 
-use crate::{tray, window};
+use crate::{core_events, tray, window};
 
 /// Tells the UI to list the Inbox again.
 const INBOX_CHANGED: &str = "inbox-changed";
@@ -56,17 +55,12 @@ pub fn start(app: &AppHandle, config: Config) {
 fn forward_events(app: AppHandle, mut events: Receiver<CoreEvent>) {
     tauri::async_runtime::spawn(async move {
         show_unread_count(&app).await;
-        loop {
-            match events.recv().await {
-                // Lagged: some events were missed, so the UI must re-list anyway.
-                Ok(CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
-                | Err(RecvError::Lagged(_)) => {
-                    let _ = app.emit(INBOX_CHANGED, ());
-                    show_unread_count(&app).await;
-                }
-                Ok(_) => {}
-                Err(RecvError::Closed) => break,
-            }
+        let inbox_changed = |event: &CoreEvent| {
+            matches!(event, CoreEvent::EmailCaptured(_) | CoreEvent::InboxChanged)
+        };
+        while core_events::changed(&mut events, inbox_changed).await {
+            let _ = app.emit(INBOX_CHANGED, ());
+            show_unread_count(&app).await;
         }
     });
 }
@@ -77,7 +71,7 @@ async fn show_unread_count(app: &AppHandle) {
     let core = app.state::<Core>();
     let Ok(core) = core.handle() else { return };
     if let Ok(unread) = core.unread_count().await {
-        let _ = tray::show_unread_count(app, unread);
+        tray::show_unread_count(app, unread);
     }
 }
 
@@ -127,31 +121,16 @@ impl From<TabKey> for SenderTabKey {
     }
 }
 
-/// What the search bar narrows the list to: parts of the sender, of a
-/// recipient and of the subject, empty for any. Mirrors `Search` in
-/// `ui/src/inbox.ts`.
-#[derive(Deserialize)]
-pub struct Search {
-    from: String,
-    to: String,
-    subject: String,
-}
-
-/// The Emails of `tab` (every Email for "All") that `search` matches,
-/// newest first, with the same filters as `list_emails` over MCP.
+/// The Emails of `tab` (every Email for "All") whose sender, recipients or
+/// subject contain `search` (any Email for an empty one), newest first.
 #[tauri::command]
 pub async fn list_emails(
     core: State<'_, Core>,
     tab: Option<TabKey>,
-    search: Search,
+    search: String,
 ) -> Result<Vec<EmailRow>, String> {
-    // An empty field searches for nothing, rather than for an empty part
-    // (which an Email without a subject, say, does not have).
-    let part = |text: String| (!text.is_empty()).then_some(text);
     let filter = EmailFilter {
-        from: part(search.from),
-        to: part(search.to),
-        subject: part(search.subject),
+        search: Some(search),
         sender_tab: tab.map(SenderTabKey::from),
         ..EmailFilter::default()
     };

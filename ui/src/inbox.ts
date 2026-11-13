@@ -33,7 +33,10 @@ export interface EmailDetail extends EmailRow {
   /** Every header field, in order, decoded. */
   headers: Header[];
   attachments: Attachment[];
-  /** The Email exactly as received, as text. */
+  /**
+   * The Email exactly as received, as text: as is if it is UTF-8, otherwise one character per byte
+   * (ISO-8859-1), so that every byte shows.
+   */
   rawSource: string;
 }
 
@@ -69,18 +72,12 @@ export interface Tabs {
   senders: SenderTab[];
 }
 
-/** Parts of the sender, of a recipient (To, Cc or Bcc) and of the subject, ignoring case; empty for any. */
-export interface Search {
-  from: string;
-  to: string;
-  subject: string;
-}
-
 /**
- * The Emails of Sender tab `tab` (every Email when null, for "All") that `search` matches, newest
- * first. Rejects with the reason if the core is not running.
+ * The Emails of Sender tab `tab` (every Email when null, for "All") whose sender, recipients (To,
+ * Cc or Bcc) or subject contain `search`, ignoring case (any Email when it is empty), newest first.
+ * Rejects with the reason if the core is not running.
  */
-export function listEmails(tab: SenderTabKey | null, search: Search): Promise<EmailRow[]> {
+export function listEmails(tab: SenderTabKey | null, search: string): Promise<EmailRow[]> {
   return invoke("list_emails", { tab, search });
 }
 

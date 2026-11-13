@@ -93,9 +93,10 @@ impl Inbox {
         self.events.subscribe()
     }
 
-    /// Tells subscribers about something that happened outside the Inbox:
-    /// they all listen here.
+    /// Tells subscribers about something that happened, in the Inbox or
+    /// outside it: they all listen here.
     pub(crate) fn notify(&self, event: CoreEvent) {
+        // No subscriber is not an error: nobody is watching yet.
         let _ = self.events.send(event);
     }
 
@@ -149,8 +150,7 @@ impl Inbox {
                 })
             })
             .await?;
-        // No subscriber is not an error: nobody is watching yet.
-        let _ = self.events.send(CoreEvent::EmailCaptured(email.clone()));
+        self.notify(CoreEvent::EmailCaptured(email.clone()));
         Ok(email)
     }
 
@@ -165,7 +165,7 @@ impl Inbox {
             })
             .await?;
         if pruned > 0 {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(())
     }
@@ -209,7 +209,7 @@ impl Inbox {
             })
             .await?;
         if marked {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(oldest)
     }
@@ -257,7 +257,7 @@ impl Inbox {
     pub(crate) async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         let marked = self.with_db(move |db| mark_unread_read(db, id)).await?;
         if marked {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(())
     }
@@ -281,7 +281,7 @@ impl Inbox {
             })
             .await?;
         if deleted > 0 {
-            let _ = self.events.send(CoreEvent::InboxChanged);
+            self.notify(CoreEvent::InboxChanged);
         }
         Ok(deleted)
     }

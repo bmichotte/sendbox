@@ -6,6 +6,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** What the user sets in the Settings window. Mirrors `Settings` in the shell. */
 export interface Settings {
+  /** The port apps send Emails to: 1 to 65535. */
+  smtpPort: number;
+  /** The port agents connect to over MCP: 1 to 65535. */
+  mcpPort: number;
   /** The most Emails the Inbox keeps: a whole number, at least 1. */
   retentionLimit: number;
   /** Whether an Email an agent reads over MCP becomes read. */
@@ -23,7 +27,10 @@ export function getSettings(): Promise<Settings> {
   return invoke("get_settings");
 }
 
-/** Saves `settings` and applies them at once: a lower Retention limit prunes the Inbox right away. */
+/**
+ * Saves `settings` and applies them at once: a new port moves its listener, a lower Retention
+ * limit prunes the Inbox right away. A port in use is no error here: the listeners' status says so.
+ */
 export function setSettings(settings: Settings): Promise<void> {
   return invoke("set_settings", { settings });
 }

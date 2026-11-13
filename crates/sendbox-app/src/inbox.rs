@@ -211,12 +211,6 @@ pub async fn tabs(core: State<'_, Core>) -> Result<Tabs, String> {
     })
 }
 
-/// The port the SMTP listener is bound to.
-#[tauri::command]
-pub fn smtp_port(core: State<'_, Core>) -> Result<u16, String> {
-    Ok(core.handle()?.smtp_port())
-}
-
 /// Deletes one Email. The UI hears that the Inbox changed.
 #[tauri::command]
 pub async fn delete_email(core: State<'_, Core>, id: i64) -> Result<(), String> {

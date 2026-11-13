@@ -102,11 +102,6 @@ export function saveAttachment(emailId: number, index: number): Promise<boolean>
   return invoke("save_attachment", { emailId, index });
 }
 
-/** The port the SMTP listener is bound to. */
-export function smtpPort(): Promise<number> {
-  return invoke("smtp_port");
-}
-
 /** Deletes one Email; the Inbox-changed event follows. */
 export function deleteEmail(id: number): Promise<void> {
   return invoke("delete_email", { id });

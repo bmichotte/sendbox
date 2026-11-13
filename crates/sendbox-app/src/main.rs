@@ -10,6 +10,7 @@
 mod badge;
 mod detail;
 mod inbox;
+mod listeners;
 mod settings;
 mod tray;
 mod window;
@@ -39,7 +40,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
             inbox::tabs,
-            inbox::smtp_port,
             inbox::delete_email,
             inbox::clear_all,
             detail::get_email,
@@ -47,7 +47,8 @@ fn main() {
             settings::get_settings,
             settings::set_settings,
             settings::launch_at_login,
-            settings::set_launch_at_login
+            settings::set_launch_at_login,
+            listeners::listeners
         ])
         .setup(|app| {
             // No Dock icon. `LSUIElement` in Info.plist avoids the flash at launch
@@ -59,6 +60,8 @@ fn main() {
             // The tray first, so that it shows the Unread count from the start.
             tray::create(app.handle())?;
             inbox::start(app.handle(), settings::core_config(app.handle())?);
+            // Once both exist: the tray shows a port in use from the start.
+            listeners::watch(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

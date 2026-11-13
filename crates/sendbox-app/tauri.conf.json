@@ -23,7 +23,7 @@
         "label": "settings",
         "title": "Sendbox Settings",
         "width": 480,
-        "height": 360,
+        "height": 560,
         "resizable": false,
         "minimizable": false,
         "maximizable": false,

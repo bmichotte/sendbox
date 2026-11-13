@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "What the Inbox window may do: call the app's own commands and hear when the Inbox changes.",
+  "description": "What the Inbox window may do: call the app's own commands, and hear when the Inbox or a listener's status changes.",
   "windows": ["main"],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

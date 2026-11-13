@@ -92,6 +92,12 @@ impl Inbox {
         self.events.subscribe()
     }
 
+    /// Tells subscribers about something that happened outside the Inbox:
+    /// they all listen here.
+    pub(crate) fn notify(&self, event: CoreEvent) {
+        let _ = self.events.send(event);
+    }
+
     /// Keeps `raw_source` exactly as received, with its envelope, prunes the
     /// oldest Emails beyond the Retention limit, and emits
     /// [`CoreEvent::EmailCaptured`].

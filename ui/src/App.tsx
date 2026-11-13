@@ -9,9 +9,9 @@ import {
   onInboxChanged,
   type Search,
   type SenderTabKey,
-  smtpPort,
   type Tabs,
 } from "./inbox";
+import { useListeners } from "./listeners";
 
 /** Something loaded from the shell, and loaded again whenever the Inbox changes. */
 type Live<T> =
@@ -35,7 +35,8 @@ export function App() {
   }
   const [search, setSearch] = useState<Search>(NO_SEARCH);
   const emails = useLive(() => listEmails(tab, search), JSON.stringify([tab, search]));
-  const port = useSmtpPort();
+  const smtp = useListeners()?.smtp ?? null;
+  const port = smtp?.state === "running" ? smtp.port : null;
   const [selected, setSelected] = useState<number | null>(null);
   // An Email that left the list is no longer open.
   const openId =
@@ -69,9 +70,14 @@ export function App() {
           )}
         </h1>
         <div className="flex items-baseline gap-4">
-          {port !== null && (
+          {smtp?.state === "running" && (
             <p className="text-xs text-neutral-500">
-              SMTP on <code className="font-mono">127.0.0.1:{port}</code>
+              SMTP on <code className="font-mono">127.0.0.1:{smtp.port}</code>
+            </p>
+          )}
+          {smtp?.state === "portInUse" && (
+            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              SMTP port {smtp.port} in use: choose another in Settings
             </p>
           )}
           <button
@@ -302,14 +308,6 @@ function useLive<T>(load: () => Promise<T>, key: string): Live<T> {
   }, [key]);
 
   return live;
-}
-
-function useSmtpPort(): number | null {
-  const [port, setPort] = useState<number | null>(null);
-  useEffect(() => {
-    smtpPort().then(setPort, () => setPort(null));
-  }, []);
-  return port;
 }
 
 function EmailListItem({

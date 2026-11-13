@@ -4,8 +4,6 @@
 //! Tools go through the same Inbox queries as the handle, so agents and the
 //! window always agree on what the Inbox holds and what is Unread.
 
-use std::io;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -21,11 +19,11 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
-use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::inbox::Inbox;
+use crate::listener::Serve;
 use crate::{CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView};
 
 /// The path of the MCP endpoint, as in `http://127.0.0.1:1026/mcp`.
@@ -36,57 +34,33 @@ const LOCAL_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 /// from this machine, on any port.
 const LOCAL_ORIGINS: [&str; 3] = ["http://localhost:*", "http://127.0.0.1:*", "http://[::1]:*"];
 
-pub(crate) struct Listener {
-    port: u16,
-    stop: CancellationToken,
-    task: JoinHandle<()>,
+/// The MCP endpoint: serves `/mcp` on its port, with tools on `inbox`.
+/// `marks_read` is read on every call, so changing it applies at once.
+pub(crate) fn server(inbox: Inbox, marks_read: Arc<AtomicBool>) -> Serve {
+    let tools = Tools::new(inbox, marks_read);
+    Box::new(move |listener, stop| Box::pin(serve(listener, tools.clone(), stop)))
 }
 
-impl Listener {
-    /// Binds `127.0.0.1:port` (loopback only) and starts serving `/mcp`.
-    /// `marks_read` is read on every call, so changing it applies at once.
-    pub(crate) async fn bind(
-        port: u16,
-        inbox: Inbox,
-        marks_read: Arc<AtomicBool>,
-    ) -> io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-        let port = listener.local_addr()?.port();
-        let stop = CancellationToken::new();
-        let tools = Tools::new(inbox, marks_read);
-        let config = StreamableHttpServerConfig::default()
-            // Against DNS rebinding: a web page can make the browser send
-            // requests here under its own name (Host) and with its own Origin.
-            // Agents send a local Host and no Origin. Entries without a port
-            // match any port.
-            .with_allowed_hosts(LOCAL_HOSTS)
-            .with_allowed_origins(LOCAL_ORIGINS)
-            // The token also closes open sessions; without it, shutdown would
-            // wait forever for a connected agent's event stream to end.
-            .with_cancellation_token(stop.child_token());
-        let service: StreamableHttpService<Tools, LocalSessionManager> = StreamableHttpService::new(
-            move || Ok(tools.clone()),
-            Arc::new(LocalSessionManager::default()),
-            config,
-        );
-        let router = axum::Router::new().nest_service(ENDPOINT, service);
-        let stopped = stop.clone().cancelled_owned();
-        let task = tokio::spawn(async move {
-            let _ = axum::serve(listener, router)
-                .with_graceful_shutdown(stopped)
-                .await;
-        });
-        Ok(Self { port, stop, task })
-    }
-
-    pub(crate) fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub(crate) async fn shutdown(self) {
-        self.stop.cancel();
-        let _ = self.task.await;
-    }
+async fn serve(listener: TcpListener, tools: Tools, stop: CancellationToken) {
+    let config = StreamableHttpServerConfig::default()
+        // Against DNS rebinding: a web page can make the browser send
+        // requests here under its own name (Host) and with its own Origin.
+        // Agents send a local Host and no Origin. Entries without a port
+        // match any port.
+        .with_allowed_hosts(LOCAL_HOSTS)
+        .with_allowed_origins(LOCAL_ORIGINS)
+        // The token also closes open sessions; without it, stopping would
+        // wait forever for a connected agent's event stream to end.
+        .with_cancellation_token(stop.child_token());
+    let service: StreamableHttpService<Tools, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(tools.clone()),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+    let router = axum::Router::new().nest_service(ENDPOINT, service);
+    let _ = axum::serve(listener, router)
+        .with_graceful_shutdown(stop.cancelled_owned())
+        .await;
 }
 
 /// The tools of one MCP session; every session shares the same Inbox.

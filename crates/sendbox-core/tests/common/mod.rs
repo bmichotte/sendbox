@@ -13,7 +13,7 @@ use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientConfig};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::StreamableHttpClientTransport;
-use sendbox_core::{Config, CoreHandle, EmailFilter, EmailSummary};
+use sendbox_core::{Config, CoreHandle, EmailFilter, EmailSummary, Listener, ListenerStatus};
 use serde_json::Value;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -66,6 +66,25 @@ impl TestCore {
     /// Connects an agent to this core's MCP endpoint.
     pub async fn agent(&self) -> Agent {
         Agent::connect(self.mcp_port()).await
+    }
+
+    /// The port the SMTP listener is bound to, failing the test if it is
+    /// not running.
+    pub fn smtp_port(&self) -> u16 {
+        self.running_port(Listener::Smtp)
+    }
+
+    /// The port the MCP endpoint is bound to, failing the test if it is not
+    /// running.
+    pub fn mcp_port(&self) -> u16 {
+        self.running_port(Listener::Mcp)
+    }
+
+    fn running_port(&self, listener: Listener) -> u16 {
+        match self.listener_status(listener) {
+            ListenerStatus::Running { port } => port,
+            status => panic!("the {listener:?} listener is not running: {status:?}"),
+        }
     }
 }
 

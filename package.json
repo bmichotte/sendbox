@@ -1,12 +1,12 @@
 {
   "name": "sendbox",
   "private": true,
-  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite ui",
     "build": "npm run typecheck && vite build ui",
     "typecheck": "tsc -p ui",
+    "test": "node --test \"scripts/*.test.mjs\"",
     "tauri": "tauri"
   },
   "dependencies": {

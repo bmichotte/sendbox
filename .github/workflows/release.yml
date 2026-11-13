@@ -1,0 +1,92 @@
+name: Release
+
+# Pushing a version tag (`v` + the version in Cargo.toml, e.g. v0.2.0) builds
+# Sendbox for macOS and Windows and publishes the installers as a GitHub
+# Release. The release stays a draft until every build has uploaded, so
+# colleagues never see a half-filled release. See "Cutting a release" in the
+# README.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    name: Draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.draft.outputs.release-id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check the tag matches the app version
+        run: node scripts/check-release-tag.mjs "$GITHUB_REF_NAME"
+      - name: Create the draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            -f name="Sendbox ${GITHUB_REF_NAME#v}" \
+            -f body="Download the \`.dmg\` (macOS) or the \`-setup.exe\` (Windows); see [Installing Sendbox](https://github.com/$GITHUB_REPOSITORY#installing-sendbox)." \
+            -F draft=true \
+            -F generate_release_notes=true \
+            --jq .id)
+          echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS universal
+            runner: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - name: Windows x64
+            runner: windows-latest
+            rust-targets: ''
+            args: ''
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Unsigned for now: an ad-hoc signature only, which Apple Silicon
+          # needs to launch the app at all. Signing with a Developer ID and
+          # notarizing (#14) replaces this with the real identity plus the
+          # APPLE_CERTIFICATE / notarization secrets. Ignored on Windows.
+          APPLE_SIGNING_IDENTITY: '-'
+        with:
+          releaseId: ${{ needs.draft.outputs.release-id }}
+          args: ${{ matrix.args }}
+          # No auto-update in Sendbox, so no latest.json.
+          uploadUpdaterJson: false
+
+  publish:
+    name: Publish release
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.draft.outputs.release-id }}
+        run: |
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false --silent

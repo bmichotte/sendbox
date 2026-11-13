@@ -33,3 +33,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+
+  release-scripts:
+    name: Release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The release tag check reads the app version through `cargo metadata`.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm test

@@ -3,5 +3,8 @@ resolver = "3"
 members = ["crates/sendbox-core", "crates/sendbox-app"]
 
 [workspace.package]
+# The Sendbox version, shared by both crates. Tauri bundles it into the app, and
+# a release tag must be `v` followed by it (see the README).
+version = "0.1.0"
 edition = "2024"
 license = "MIT"

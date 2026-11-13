@@ -35,6 +35,10 @@ pub struct EmailView {
     pub links: Vec<String>,
     /// What is attached, without the content.
     pub attachments: Vec<Attachment>,
+    /// The raw source as text that keeps every byte, for showing it: as is
+    /// if it is UTF-8, as most Emails are, otherwise one character per byte
+    /// (ISO-8859-1), so that no byte is replaced or dropped.
+    pub raw_source_text: String,
 }
 
 /// One header field of an Email.
@@ -92,6 +96,7 @@ impl EmailView {
                 html_with_inline_images: None,
                 headers: Vec::new(),
                 attachments: Vec::new(),
+                raw_source_text: raw_source_text(raw_source),
             };
         };
         let text = text_body(&message);
@@ -104,7 +109,16 @@ impl EmailView {
             html,
             headers: headers(&message),
             attachments: attachments(&message),
+            raw_source_text: raw_source_text(raw_source),
         }
+    }
+}
+
+/// `raw_source` as text, every byte kept: see [`EmailView::raw_source_text`].
+fn raw_source_text(raw_source: &[u8]) -> String {
+    match std::str::from_utf8(raw_source) {
+        Ok(text) => text.to_owned(),
+        Err(_) => raw_source.iter().copied().map(char::from).collect(),
     }
 }
 

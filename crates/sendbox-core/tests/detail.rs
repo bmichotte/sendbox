@@ -187,6 +187,35 @@ async fn each_attachment_in_the_view_can_be_saved_with_its_decoded_content() {
 }
 
 #[tokio::test]
+async fn the_raw_source_shows_as_text_byte_for_byte_even_when_it_is_not_utf_8() {
+    let core = TestCore::start().await;
+    let mut smtp = SmtpClient::after_ehlo(core.smtp_port()).await;
+    // 8BITMIME lets an app send Latin-1 as is: not UTF-8, and \x80 is not
+    // even a printable Latin-1 character.
+    let reply = smtp
+        .send_transaction(
+            "app@acme.test",
+            &["alice@example.com"],
+            b"Subject: Caf\xE9\r\n\r\nUn caf\xE9 \x80\r\n.\r\n",
+        )
+        .await;
+    assert_eq!(reply.code, 250);
+    let latin1 = core.inbox().await[0].id;
+    let utf8 = capture(&core, "Subject: Café ☕\r\n\r\nZoë\r\n").await;
+
+    assert_eq!(
+        view(&core, latin1).await.raw_source_text,
+        "Subject: Café\r\n\r\nUn café \u{80}\r\n",
+        "one character per byte, none replaced"
+    );
+    assert_eq!(
+        view(&core, utf8).await.raw_source_text,
+        "Subject: Café ☕\r\n\r\nZoë\r\n",
+        "UTF-8 as is"
+    );
+}
+
+#[tokio::test]
 async fn there_is_nothing_to_save_past_the_last_attachment_or_of_a_missing_email() {
     let core = TestCore::start().await;
     let id = capture(&core, WITH_ATTACHMENTS).await;

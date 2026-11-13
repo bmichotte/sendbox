@@ -197,6 +197,8 @@ impl From<EmailView> for Email {
             html,
             // Inline images are attachment bytes, which agents never get.
             html_with_inline_images: _,
+            // Agents read the parsed Email; the raw source is for the window.
+            raw_source_text: _,
             headers,
             links,
             attachments,

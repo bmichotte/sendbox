@@ -28,7 +28,7 @@ pub struct EmailDetail {
     html: Option<String>,
     headers: Vec<HeaderField>,
     attachments: Vec<AttachmentInfo>,
-    /// The raw source as text; bytes that are not UTF-8 show as U+FFFD.
+    /// The raw source as text, every byte kept (see the core's view).
     raw_source: String,
 }
 
@@ -47,13 +47,14 @@ pub struct AttachmentInfo {
 }
 
 impl EmailDetail {
-    fn new(view: EmailView, raw_source: &[u8]) -> Self {
+    fn new(view: EmailView) -> Self {
         let EmailView {
             summary,
             text,
             html_with_inline_images,
             headers,
             attachments,
+            raw_source_text,
             ..
         } = view;
         Self {
@@ -82,7 +83,7 @@ impl EmailDetail {
                     },
                 )
                 .collect(),
-            raw_source: String::from_utf8_lossy(raw_source).into_owned(),
+            raw_source: raw_source_text,
         }
     }
 }
@@ -96,15 +97,11 @@ pub async fn get_email(core: State<'_, Core>, id: i64) -> Result<EmailDetail, St
     core.mark_read(id)
         .await
         .map_err(|error| error.to_string())?;
-    let view = core.email(id).await.map_err(|error| error.to_string())?;
-    let raw_source = core
-        .raw_source(id)
+    core.email(id)
         .await
-        .map_err(|error| error.to_string())?;
-    match (view, raw_source) {
-        (Some(view), Some(raw_source)) => Ok(EmailDetail::new(view, &raw_source)),
-        _ => Err("This Email is no longer in the Inbox.".to_owned()),
-    }
+        .map_err(|error| error.to_string())?
+        .map(EmailDetail::new)
+        .ok_or_else(|| "This Email is no longer in the Inbox.".to_owned())
 }
 
 /// Asks where to save attachment `index` of Email `email_id`, then writes

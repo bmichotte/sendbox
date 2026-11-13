@@ -33,7 +33,10 @@ export interface EmailDetail extends EmailRow {
   /** Every header field, in order, decoded. */
   headers: Header[];
   attachments: Attachment[];
-  /** The Email exactly as received, as text. */
+  /**
+   * The Email exactly as received, as text: as is if it is UTF-8, otherwise one character per byte
+   * (ISO-8859-1), so that every byte shows.
+   */
   rawSource: string;
 }
 

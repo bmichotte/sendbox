@@ -1,5 +1,6 @@
 //! The Inbox: every Captured Email, kept in a single SQLite file.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,7 +12,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     AttachmentContent, CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView,
-    Error,
+    Error, SenderTab,
 };
 
 const DATABASE_FILE: &str = "inbox.sqlite3";
@@ -204,6 +205,32 @@ impl Inbox {
             let _ = self.events.send(CoreEvent::InboxChanged);
         }
         Ok(oldest)
+    }
+
+    /// One Sender tab per sender with Emails in the Inbox.
+    pub(crate) async fn sender_tabs(&self) -> Result<Vec<SenderTab>, Error> {
+        self.with_db(|db| {
+            // Newest first, so each tab comes in the order of its most recent Email.
+            let mut tabs: Vec<SenderTab> = Vec::new();
+            // Where each key's tab is in `tabs`.
+            let mut positions = HashMap::new();
+            for email in select(db, &EmailFilter::default(), None)? {
+                let key = email.sender_tab();
+                let position = match positions.get(&key) {
+                    Some(&position) => position,
+                    None => {
+                        positions.insert(key.clone(), tabs.len());
+                        tabs.push(SenderTab { key, unread: 0 });
+                        tabs.len() - 1
+                    }
+                };
+                if !email.read {
+                    tabs[position].unread += 1;
+                }
+            }
+            Ok(tabs)
+        })
+        .await
     }
 
     /// How many Emails are Unread.

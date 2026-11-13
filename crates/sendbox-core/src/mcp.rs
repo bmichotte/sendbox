@@ -297,6 +297,7 @@ impl DeleteParams {
             subject: self.subject,
             since: self.since.map(SystemTime::from),
             unread_only: self.unread_only,
+            search: None,
             sender_tab: None,
         };
         let filtered = filter != EmailFilter::default();
@@ -355,6 +356,7 @@ impl Tools {
             subject: params.subject,
             since: params.since.map(SystemTime::from),
             unread_only: params.unread_only,
+            search: None,
             sender_tab: None,
         };
         let emails = self
@@ -422,6 +424,7 @@ impl Tools {
             subject: params.subject,
             since: params.since.map(SystemTime::from),
             unread_only: true,
+            search: None,
             sender_tab: None,
         };
         // Subscribe before looking in the Inbox, so an Email Captured in

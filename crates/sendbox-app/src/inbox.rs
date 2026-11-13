@@ -127,31 +127,16 @@ impl From<TabKey> for SenderTabKey {
     }
 }
 
-/// What the search bar narrows the list to: parts of the sender, of a
-/// recipient and of the subject, empty for any. Mirrors `Search` in
-/// `ui/src/inbox.ts`.
-#[derive(Deserialize)]
-pub struct Search {
-    from: String,
-    to: String,
-    subject: String,
-}
-
-/// The Emails of `tab` (every Email for "All") that `search` matches,
-/// newest first, with the same filters as `list_emails` over MCP.
+/// The Emails of `tab` (every Email for "All") whose sender, recipients or
+/// subject contain `search` (any Email for an empty one), newest first.
 #[tauri::command]
 pub async fn list_emails(
     core: State<'_, Core>,
     tab: Option<TabKey>,
-    search: Search,
+    search: String,
 ) -> Result<Vec<EmailRow>, String> {
-    // An empty field searches for nothing, rather than for an empty part
-    // (which an Email without a subject, say, does not have).
-    let part = |text: String| (!text.is_empty()).then_some(text);
     let filter = EmailFilter {
-        from: part(search.from),
-        to: part(search.to),
-        subject: part(search.subject),
+        search: Some(search),
         sender_tab: tab.map(SenderTabKey::from),
         ..EmailFilter::default()
     };

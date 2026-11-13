@@ -137,6 +137,10 @@ pub struct EmailFilter {
     pub to: Option<String>,
     /// Part of the subject.
     pub subject: Option<String>,
+    /// Part of the sender, of a recipient or of the subject, as `from`, `to`
+    /// and `subject` see them: any one of them may contain it. The window's
+    /// search box; empty, it matches every Email.
+    pub search: Option<String>,
     /// Only Emails Captured after this time: an Email's own
     /// [`received_at`](EmailSummary::received_at) leaves it out.
     pub since: Option<SystemTime>,
@@ -149,14 +153,15 @@ pub struct EmailFilter {
 impl EmailFilter {
     /// Whether `email` is one of the Emails this filter lists.
     pub(crate) fn matches(&self, email: &EmailSummary) -> bool {
-        let senders = [email.from.as_deref(), Some(&email.envelope_sender)];
-        let recipients = [&email.to, &email.cc, &email.envelope_recipients];
-        contains_any(&self.from, senders.into_iter().flatten())
+        let subject = || email.subject.as_deref().into_iter();
+        let search = self.search.as_deref().filter(|search| !search.is_empty());
+        contains_any(self.from.as_deref(), senders(email))
+            && contains_any(self.to.as_deref(), recipients(email))
+            && contains_any(self.subject.as_deref(), subject())
             && contains_any(
-                &self.to,
-                recipients.into_iter().flatten().map(String::as_str),
+                search,
+                senders(email).chain(recipients(email)).chain(subject()),
             )
-            && contains_any(&self.subject, email.subject.as_deref())
             && self.since.is_none_or(|since| email.received_at > since)
             && !(self.unread_only && email.read)
             && self
@@ -177,9 +182,26 @@ pub enum EmailSelection {
     All,
 }
 
+/// The addresses the sender filters look in: the `From` header address and
+/// the envelope sender.
+fn senders(email: &EmailSummary) -> impl Iterator<Item = &str> {
+    [email.from.as_deref(), Some(email.envelope_sender.as_str())]
+        .into_iter()
+        .flatten()
+}
+
+/// The addresses the recipient filters look in: `To`, `Cc` and the
+/// envelope, so Bcc too.
+fn recipients(email: &EmailSummary) -> impl Iterator<Item = &str> {
+    [&email.to, &email.cc, &email.envelope_recipients]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+}
+
 /// True if there is no `needle`, or if one of `haystacks` contains it,
 /// ignoring case (in any script, not only ASCII).
-fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item = &'a str>) -> bool {
+fn contains_any<'a>(needle: Option<&str>, haystacks: impl IntoIterator<Item = &'a str>) -> bool {
     let Some(needle) = needle else { return true };
     let needle = needle.to_lowercase();
     haystacks

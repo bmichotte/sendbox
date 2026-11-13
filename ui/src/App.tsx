@@ -7,7 +7,6 @@ import {
   listEmails,
   listTabs,
   onInboxChanged,
-  type Search,
   type SenderTabKey,
   type Tabs,
 } from "./inbox";
@@ -18,8 +17,6 @@ type Live<T> =
   | { status: "loading" }
   | { status: "ready"; value: T }
   | { status: "failed"; reason: string };
-
-const NO_SEARCH: Search = { from: "", to: "", subject: "" };
 
 export function App() {
   const tabs = useLive(listTabs, "tabs");
@@ -33,7 +30,7 @@ export function App() {
   ) {
     setTab(null);
   }
-  const [search, setSearch] = useState<Search>(NO_SEARCH);
+  const [search, setSearch] = useState("");
   const emails = useLive(() => listEmails(tab, search), JSON.stringify([tab, search]));
   const smtp = useListeners()?.smtp ?? null;
   const port = smtp?.state === "running" ? smtp.port : null;
@@ -197,29 +194,18 @@ function TabButton({
   );
 }
 
-/** Narrows the current tab by sender, recipient and subject. */
-function SearchBar({ search, onChange }: { search: Search; onChange: (search: Search) => void }) {
-  const fields: { field: keyof Search; label: string }[] = [
-    { field: "from", label: "From" },
-    { field: "to", label: "To" },
-    { field: "subject", label: "Subject" },
-  ];
+/** Narrows the current tab to the Emails whose sender, recipients or subject contain the search. */
+function SearchBar({ search, onChange }: { search: string; onChange: (search: string) => void }) {
   return (
-    <div
-      role="search"
-      className="flex gap-2 border-b border-neutral-200 px-4 py-2 dark:border-neutral-800"
-    >
-      {fields.map(({ field, label }) => (
-        <input
-          key={field}
-          type="search"
-          aria-label={`Search by ${label.toLowerCase()}`}
-          placeholder={label}
-          value={search[field]}
-          onChange={(event) => onChange({ ...search, [field]: event.target.value })}
-          className="min-w-0 flex-1 rounded border border-neutral-300 bg-transparent px-2 py-1 text-xs placeholder:text-neutral-400 dark:border-neutral-700"
-        />
-      ))}
+    <div role="search" className="border-b border-neutral-200 px-4 py-2 dark:border-neutral-800">
+      <input
+        type="search"
+        aria-label="Search by sender, recipient or subject"
+        placeholder="Search sender, recipient or subject"
+        value={search}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded border border-neutral-300 bg-transparent px-2 py-1 text-xs placeholder:text-neutral-400 dark:border-neutral-700"
+      />
     </div>
   );
 }

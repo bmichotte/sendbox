@@ -1,7 +1,7 @@
 mod common;
 
 use common::{Agent, STEP_TIMEOUT, SmtpClient, TestCore, test_config};
-use sendbox_core::Config;
+use sendbox_core::{Config, Listener, ListenerStatus};
 use serde_json::json;
 use tokio::time::timeout;
 
@@ -43,9 +43,12 @@ async fn shutdown_releases_the_smtp_port_for_a_new_core() {
 
     first.handle.shutdown().await;
 
-    // Starting on that exact port fails if it is still taken.
     let second = TestCore::start_with(port, tempfile::TempDir::new().unwrap()).await;
-    assert_eq!(second.smtp_port(), port);
+    assert_eq!(
+        second.listener_status(Listener::Smtp),
+        ListenerStatus::Running { port },
+        "the port is free again"
+    );
 }
 
 #[tokio::test]

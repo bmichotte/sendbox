@@ -2,7 +2,6 @@
 //! driving `smtp-proto`'s sans-IO parser. Emails are Captured, never relayed.
 
 use std::io;
-use std::net::Ipv4Addr;
 use std::slice::Iter;
 
 use smtp_proto::request::receiver::{
@@ -11,47 +10,28 @@ use smtp_proto::request::receiver::{
 use smtp_proto::{AUTH_LOGIN, AUTH_PLAIN, Request};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::inbox::{Envelope, Inbox};
+use crate::listener::Serve;
 
 const HOSTNAME: &str = "sendbox";
 /// The largest Email accepted, in bytes (25 MiB), advertised in EHLO as SIZE.
 const MAX_EMAIL_SIZE: usize = 25 * 1024 * 1024;
 const READ_BUFFER_SIZE: usize = 8 * 1024;
 
-pub(crate) struct Listener {
-    port: u16,
-    stop: oneshot::Sender<()>,
-    task: JoinHandle<()>,
+/// The SMTP listener: accepts sessions on its port, each Capturing into
+/// `inbox`.
+pub(crate) fn server(inbox: Inbox) -> Serve {
+    Box::new(move |listener, stop| Box::pin(accept_loop(listener, inbox.clone(), stop)))
 }
 
-impl Listener {
-    /// Binds `127.0.0.1:port` (loopback only) and starts accepting sessions.
-    pub(crate) async fn bind(port: u16, inbox: Inbox) -> io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
-        let port = listener.local_addr()?.port();
-        let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(accept_loop(listener, inbox, stopped));
-        Ok(Self { port, stop, task })
-    }
-
-    pub(crate) fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub(crate) async fn shutdown(self) {
-        let _ = self.stop.send(());
-        let _ = self.task.await;
-    }
-}
-
-async fn accept_loop(listener: TcpListener, inbox: Inbox, mut stopped: oneshot::Receiver<()>) {
+async fn accept_loop(listener: TcpListener, inbox: Inbox, stop: CancellationToken) {
     let mut sessions = JoinSet::new();
     loop {
         tokio::select! {
-            _ = &mut stopped => break,
+            _ = stop.cancelled() => break,
             accepted = listener.accept() => {
                 // Accept errors (e.g. a connection reset before accept) only
                 // concern that one connection: keep listening.

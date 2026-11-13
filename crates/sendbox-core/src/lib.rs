@@ -5,6 +5,7 @@
 //! [`start`] and drives it through the returned [`CoreHandle`].
 
 mod inbox;
+mod listener;
 mod mcp;
 mod smtp;
 mod view;
@@ -149,6 +150,26 @@ fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item =
         .any(|haystack| haystack.to_lowercase().contains(&needle))
 }
 
+/// One of the core's two listeners, each on its own port of `127.0.0.1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Listener {
+    /// The SMTP listener apps send Emails to.
+    Smtp,
+    /// The MCP endpoint agents connect to.
+    Mcp,
+}
+
+/// Whether a listener is listening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenerStatus {
+    /// Listening on `port`: the port actually bound, so for 0 the ephemeral
+    /// port the system chose.
+    Running { port: u16 },
+    /// Not listening, because another program holds `port`. The rest of the
+    /// core keeps running.
+    PortInUse { port: u16 },
+}
+
 /// Something that happened in the core, broadcast live to subscribers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -159,32 +180,33 @@ pub enum CoreEvent {
     /// The Inbox changed other than by a Capture (Emails were deleted or
     /// pruned, say): list it again.
     InboxChanged,
+    /// A listener's status changed after [`CoreHandle::set_port`].
+    ListenerChanged {
+        listener: Listener,
+        status: ListenerStatus,
+    },
 }
 
 /// A running core. Dropping it without [`CoreHandle::shutdown`] leaves the
 /// listeners running until the async runtime stops.
 pub struct CoreHandle {
     inbox: Inbox,
-    smtp: smtp::Listener,
-    mcp: mcp::Listener,
+    smtp: listener::Slot,
+    mcp: listener::Slot,
     /// Whether MCP reads mark Emails as read, shared with the MCP endpoint.
     mcp_marks_read: Arc<AtomicBool>,
 }
 
 /// Starts a core: opens the Inbox in the data directory, binds the SMTP
-/// listener and the MCP endpoint, and begins Capturing.
+/// listener and the MCP endpoint, and begins Capturing. A port in use stops
+/// only its listener, which says so in [`CoreHandle::listener_status`]: only
+/// an Inbox that cannot open fails the start.
 pub async fn start(config: Config) -> Result<CoreHandle, Error> {
     let inbox = Inbox::open(&config.data_dir, config.retention_limit).await?;
-    let smtp = smtp::Listener::bind(config.smtp_port, inbox.clone()).await?;
     let marks_read = Arc::new(AtomicBool::new(config.mcp_marks_read));
-    let mcp = match mcp::Listener::bind(config.mcp_port, inbox.clone(), marks_read.clone()).await {
-        Ok(mcp) => mcp,
-        Err(error) => {
-            // Leave nothing listening behind a core that failed to start.
-            smtp.shutdown().await;
-            return Err(error.into());
-        }
-    };
+    let smtp = listener::Slot::start(config.smtp_port, smtp::server(inbox.clone())).await;
+    let mcp_server = mcp::server(inbox.clone(), marks_read.clone());
+    let mcp = listener::Slot::start(config.mcp_port, mcp_server).await;
     Ok(CoreHandle {
         inbox,
         smtp,
@@ -194,14 +216,30 @@ pub async fn start(config: Config) -> Result<CoreHandle, Error> {
 }
 
 impl CoreHandle {
-    /// The port the SMTP listener is actually bound to.
-    pub fn smtp_port(&self) -> u16 {
-        self.smtp.port()
+    /// Whether `listener` is listening, and on which port.
+    pub fn listener_status(&self, listener: Listener) -> ListenerStatus {
+        self.listener(listener).status()
     }
 
-    /// The port the MCP endpoint is actually bound to.
-    pub fn mcp_port(&self) -> u16 {
-        self.mcp.port()
+    /// Moves `listener` to `port` while the core runs (0 for an ephemeral
+    /// port), closing what was open on the old one, and returns its new
+    /// status: on a port in use, the listener stops and says so. The same
+    /// port tries again a port that was in use, and leaves alone a listener
+    /// already running there. Each change also emits
+    /// [`CoreEvent::ListenerChanged`].
+    pub async fn set_port(&self, listener: Listener, port: u16) -> ListenerStatus {
+        let notify = |status| {
+            self.inbox
+                .notify(CoreEvent::ListenerChanged { listener, status })
+        };
+        self.listener(listener).move_to(port, notify).await
+    }
+
+    fn listener(&self, listener: Listener) -> &listener::Slot {
+        match listener {
+            Listener::Smtp => &self.smtp,
+            Listener::Mcp => &self.mcp,
+        }
     }
 
     /// The Emails `filter` matches, newest first, at most `limit` of them.

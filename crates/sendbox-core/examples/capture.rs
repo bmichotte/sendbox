@@ -11,7 +11,7 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use sendbox_core::{Config, CoreEvent, EmailFilter, EmailSummary};
+use sendbox_core::{Config, CoreEvent, EmailFilter, EmailSummary, Listener, ListenerStatus};
 use tokio::sync::broadcast::error::RecvError;
 
 #[tokio::main]
@@ -38,11 +38,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ..Config::new(&data_dir)
     })
     .await
-    .map_err(|error| format!("cannot start on port {smtp_port}: {error}"))?;
+    .map_err(|error| format!("cannot open the Inbox in {}: {error}", data_dir.display()))?;
+    let smtp = describe(core.listener_status(Listener::Smtp), |port| {
+        format!("127.0.0.1:{port}")
+    });
+    let mcp = describe(core.listener_status(Listener::Mcp), |port| {
+        format!("http://127.0.0.1:{port}/mcp")
+    });
     println!(
-        "Capturing on 127.0.0.1:{} — MCP on http://127.0.0.1:{}/mcp — Inbox in {} — Ctrl+C to stop",
-        core.smtp_port(),
-        core.mcp_port(),
+        "SMTP {smtp} — MCP {mcp} — Inbox in {} — Ctrl+C to stop",
         data_dir.display()
     );
     let mut events = core.subscribe();
@@ -66,6 +70,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     core.shutdown().await;
     println!("Stopped");
     Ok(())
+}
+
+fn describe(status: ListenerStatus, address: fn(u16) -> String) -> String {
+    match status {
+        ListenerStatus::Running { port } => format!("on {}", address(port)),
+        ListenerStatus::PortInUse { port } => format!("not running: port {port} in use"),
+    }
 }
 
 fn print_email(email: &EmailSummary) {

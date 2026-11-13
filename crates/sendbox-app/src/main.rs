@@ -5,6 +5,7 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod detail;
 mod inbox;
 mod tray;
 mod window;
@@ -24,9 +25,14 @@ fn main() {
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
                 .build(),
         )
+        // Save dialogs for attachments; only Rust shows them, so the window
+        // gets no dialog permission.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
-            inbox::smtp_port
+            inbox::smtp_port,
+            detail::get_email,
+            detail::save_attachment
         ])
         .setup(|app| {
             // No Dock icon. `LSUIElement` in Info.plist avoids the flash at launch

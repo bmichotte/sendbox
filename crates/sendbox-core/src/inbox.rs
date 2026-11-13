@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use tokio::sync::broadcast;
 
-use crate::{CoreEvent, EmailFilter, EmailId, EmailSummary, EmailView, Error};
+use crate::{AttachmentContent, CoreEvent, EmailFilter, EmailId, EmailSummary, EmailView, Error};
 
 const DATABASE_FILE: &str = "inbox.sqlite3";
 /// Events a slow subscriber may fall behind by before it starts missing some.
@@ -207,6 +207,20 @@ impl Inbox {
         // Parsing a large Email takes a while: keep it off the async workers
         // and outside the database lock.
         blocking(move || Ok(Some(EmailView::parse(summary, &raw_source)))).await
+    }
+
+    /// The content of one Email's attachment, or `None` if there is no such
+    /// Email or attachment.
+    pub(crate) async fn attachment(
+        &self,
+        id: EmailId,
+        index: usize,
+    ) -> Result<Option<AttachmentContent>, Error> {
+        let Some(raw_source) = self.raw_source(id).await? else {
+            return Ok(None);
+        };
+        // Decoding a large attachment takes a while, as parsing does.
+        blocking(move || Ok(AttachmentContent::parse(&raw_source, index))).await
     }
 
     pub(crate) async fn raw_source(&self, id: EmailId) -> Result<Option<Vec<u8>>, Error> {

@@ -18,7 +18,7 @@ pub enum Core {
 }
 
 impl Core {
-    fn handle(&self) -> Result<&CoreHandle, String> {
+    pub fn handle(&self) -> Result<&CoreHandle, String> {
         match self {
             Core::Running(handle) => Ok(handle),
             Core::Failed(reason) => Err(reason.clone()),

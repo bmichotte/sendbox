@@ -8,6 +8,7 @@ description = "Sendbox core: SMTP Capture, Inbox storage and the MCP server, ind
 [dependencies]
 # rmcp and mail-parser change their APIs between majors: keep each on one major.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
 mail-parser = "1.0"
 regex = "1"

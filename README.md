@@ -36,6 +36,8 @@ Point your app's SMTP settings at host `127.0.0.1`, port `1025`, without TLS. An
 nodemailer.createTransport({ host: "127.0.0.1", port: 1025 });
 ```
 
+If another tool (Mailpit, MailCatcher…) already holds port 1025 or 1026, Sendbox keeps running, its icon shows an error and its menu says "Port 1025 in use". Choose other ports in **Settings…**: they apply at once, without restarting.
+
 ### Letting an agent read your Emails
 
 Sendbox serves an MCP endpoint at `http://127.0.0.1:1026/mcp` while it runs, so a coding agent can find the Emails your app sent and follow their links (to verify a sign-up, say). With Claude Code:

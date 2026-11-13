@@ -4,8 +4,7 @@
 use std::time::UNIX_EPOCH;
 
 use sendbox_core::{
-    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSelection, EmailSummary, Listener,
-    ListenerStatus,
+    Config, CoreEvent, CoreHandle, EmailFilter, EmailId, EmailSelection, EmailSummary,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -101,15 +100,6 @@ pub async fn list_emails(core: State<'_, Core>) -> Result<Vec<EmailRow>, String>
         .await
         .map_err(|error| error.to_string())?;
     Ok(emails.into_iter().map(EmailRow::from).collect())
-}
-
-/// The port the SMTP listener is bound to.
-#[tauri::command]
-pub fn smtp_port(core: State<'_, Core>) -> Result<u16, String> {
-    match core.handle()?.listener_status(Listener::Smtp) {
-        ListenerStatus::Running { port } => Ok(port),
-        ListenerStatus::PortInUse { port } => Err(format!("Port {port} in use")),
-    }
 }
 
 /// Deletes one Email. The UI hears that the Inbox changed.

@@ -6,8 +6,8 @@ import {
   type EmailRow,
   listEmails,
   onInboxChanged,
-  smtpPort,
 } from "./inbox";
+import { useListeners } from "./listeners";
 
 type InboxState =
   | { status: "loading" }
@@ -16,7 +16,8 @@ type InboxState =
 
 export function App() {
   const inbox = useInbox();
-  const port = useSmtpPort();
+  const smtp = useListeners()?.smtp ?? null;
+  const port = smtp?.state === "running" ? smtp.port : null;
   const [selected, setSelected] = useState<number | null>(null);
   // An Email that left the Inbox is no longer open.
   const openId =
@@ -50,9 +51,14 @@ export function App() {
           )}
         </h1>
         <div className="flex items-baseline gap-4">
-          {port !== null && (
+          {smtp?.state === "running" && (
             <p className="text-xs text-neutral-500">
-              SMTP on <code className="font-mono">127.0.0.1:{port}</code>
+              SMTP on <code className="font-mono">127.0.0.1:{smtp.port}</code>
+            </p>
+          )}
+          {smtp?.state === "portInUse" && (
+            <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+              SMTP port {smtp.port} in use: choose another in Settings
             </p>
           )}
           <button
@@ -172,14 +178,6 @@ function useInbox(): InboxState {
   }, []);
 
   return inbox;
-}
-
-function useSmtpPort(): number | null {
-  const [port, setPort] = useState<number | null>(null);
-  useEffect(() => {
-    smtpPort().then(setPort, () => setPort(null));
-  }, []);
-  return port;
 }
 
 function EmailListItem({

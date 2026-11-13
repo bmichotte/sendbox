@@ -1,15 +1,16 @@
 //! The Settings: what the user sets in the Settings window. They are kept as
 //! JSON in the platform config directory, give the core its config at
-//! startup, and are applied to the running core when they change.
+//! startup, and are applied to the running core when they change: a new port
+//! moves its listener at once.
 //!
 //! Launch at login is not in the file: the OS keeps it, and the user can
 //! also change it there (System Settings, Task Manager), so it is read from
 //! the OS each time.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
 
-use sendbox_core::{Config, CoreHandle};
+use sendbox_core::{Config, CoreHandle, Listener};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -23,6 +24,10 @@ const SETTINGS_FILE: &str = "settings.json";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    /// The port apps send Emails to.
+    smtp_port: NonZeroU16,
+    /// The port agents connect to over MCP.
+    mcp_port: NonZeroU16,
     /// The most Emails the Inbox keeps.
     retention_limit: NonZeroUsize,
     /// Whether an Email an agent reads over MCP becomes read.
@@ -33,7 +38,10 @@ impl Default for Settings {
     /// The core's defaults.
     fn default() -> Self {
         let defaults = Config::new(PathBuf::new());
+        let port = |port| NonZeroU16::new(port).expect("a default port is not 0");
         Self {
+            smtp_port: port(defaults.smtp_port),
+            mcp_port: port(defaults.mcp_port),
             retention_limit: defaults.retention_limit,
             mcp_marks_read: defaults.mcp_marks_read,
         }
@@ -44,14 +52,20 @@ impl Settings {
     /// The core config these settings give, with the Inbox in `data_dir`.
     fn config(&self, data_dir: PathBuf) -> Config {
         Config {
+            smtp_port: self.smtp_port.get(),
+            mcp_port: self.mcp_port.get(),
             retention_limit: self.retention_limit,
             mcp_marks_read: self.mcp_marks_read,
             ..Config::new(data_dir)
         }
     }
 
-    /// Applies these settings to a running core, without restarting it.
+    /// Applies these settings to a running core, without restarting it. A
+    /// port in use is not an error here: its listener says so, and the tray
+    /// and the windows show it. A listener already on its port is left alone.
     async fn apply(&self, core: &CoreHandle) -> Result<(), sendbox_core::Error> {
+        core.set_port(Listener::Smtp, self.smtp_port.get()).await;
+        core.set_port(Listener::Mcp, self.mcp_port.get()).await;
         core.set_mcp_marks_read(self.mcp_marks_read);
         core.set_retention_limit(self.retention_limit).await
     }
@@ -99,8 +113,8 @@ pub async fn get_settings(app: AppHandle) -> Settings {
     load(&app)
 }
 
-/// Saves `settings` and applies them to the running core at once: a lower
-/// Retention limit prunes the Inbox right away.
+/// Saves `settings` and applies them to the running core at once: a new
+/// port moves its listener, a lower Retention limit prunes the Inbox.
 #[tauri::command]
 pub async fn set_settings(
     app: AppHandle,

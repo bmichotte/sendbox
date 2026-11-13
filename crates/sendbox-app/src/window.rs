@@ -1,7 +1,10 @@
-//! The Inbox window: declared hidden in `tauri.conf.json`, shown and hidden
-//! from the tray, never destroyed while the app runs.
+//! The Inbox and Settings windows: declared hidden in `tauri.conf.json`,
+//! shown and hidden from the tray, never destroyed while the app runs.
 
 use tauri::{AppHandle, Manager, WebviewWindow};
+
+/// The label of the Settings window declared in `tauri.conf.json`.
+pub const SETTINGS: &str = "settings";
 
 /// Hides the window if it is in front of the user, brings it there otherwise.
 pub fn toggle(app: &AppHandle) {
@@ -24,6 +27,13 @@ pub fn toggle(app: &AppHandle) {
 /// Brings the window to the front, focused.
 pub fn show(app: &AppHandle) {
     if let Some(window) = main_window(app) {
+        bring_to_front(&window);
+    }
+}
+
+/// Brings the Settings window to the front, focused.
+pub fn show_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS) {
         bring_to_front(&window);
     }
 }

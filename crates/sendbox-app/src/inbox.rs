@@ -34,11 +34,9 @@ impl Core {
     }
 }
 
-/// Starts the core with its defaults (SMTP on 1025, MCP on 1026) and the
-/// Inbox in the platform local data directory. If it cannot start, the app
-/// still runs and the window shows why.
-pub fn start(app: &AppHandle) -> tauri::Result<()> {
-    let config = Config::new(app.path().app_local_data_dir()?);
+/// Starts the core with `config`. If it cannot start, the app still runs
+/// and the window shows why.
+pub fn start(app: &AppHandle, config: Config) {
     let core = match tauri::async_runtime::block_on(sendbox_core::start(config)) {
         Ok(handle) => {
             forward_events(app.clone(), &handle);
@@ -47,7 +45,6 @@ pub fn start(app: &AppHandle) -> tauri::Result<()> {
         Err(error) => Core::Failed(format!("Sendbox could not start Capturing: {error}")),
     };
     app.manage(core);
-    Ok(())
 }
 
 fn forward_events(app: AppHandle, core: &CoreHandle) {

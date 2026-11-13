@@ -1,5 +1,5 @@
 //! Sendbox core: Captures Emails over SMTP into a single persistent Inbox, and
-//! lets agents list and read them over MCP.
+//! lets agents list, read and delete them over MCP.
 //!
 //! The core has no Tauri dependency. A shell starts it from a [`Config`] with
 //! [`start`] and drives it through the returned [`CoreHandle`].
@@ -121,6 +121,17 @@ impl EmailFilter {
     }
 }
 
+/// Which Emails to delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailSelection {
+    /// The Emails with these ids; ids no Email has are ignored.
+    Ids(Vec<EmailId>),
+    /// The Emails the filter lists.
+    Matching(EmailFilter),
+    /// Every Email: Clear all.
+    All,
+}
+
 /// True if there is no `needle`, or if one of `haystacks` contains it,
 /// ignoring case (in any script, not only ASCII).
 fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item = &'a str>) -> bool {
@@ -137,6 +148,9 @@ fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item =
 pub enum CoreEvent {
     /// An Email was Captured into the Inbox.
     EmailCaptured(EmailSummary),
+    /// The Inbox changed other than by a Capture (Emails were deleted, say):
+    /// list it again.
+    InboxChanged,
 }
 
 /// A running core. Dropping it without [`CoreHandle::shutdown`] leaves the
@@ -194,6 +208,11 @@ impl CoreHandle {
     /// Email has this id.
     pub async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         self.inbox.mark_read(id).await
+    }
+
+    /// Deletes the `selected` Emails for good and returns how many there were.
+    pub async fn delete_emails(&self, selected: EmailSelection) -> Result<usize, Error> {
+        self.inbox.delete(selected).await
     }
 
     /// Live events from now on. A subscriber that falls more than a few

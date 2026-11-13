@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use tokio::sync::broadcast;
 
-use crate::{CoreEvent, EmailFilter, EmailId, EmailSummary, EmailView, Error};
+use crate::{CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView, Error};
 
 const DATABASE_FILE: &str = "inbox.sqlite3";
 /// Events a slow subscriber may fall behind by before it starts missing some.
@@ -123,31 +123,12 @@ impl Inbox {
     }
 
     /// The Emails `filter` matches, newest first, at most `limit` of them.
-    ///
-    /// Filtering happens here rather than in SQL: SQLite only folds ASCII
-    /// case, and the Inbox is small (bounded by the Retention limit).
     pub(crate) async fn list(
         &self,
         filter: EmailFilter,
         limit: Option<usize>,
     ) -> Result<Vec<EmailSummary>, Error> {
-        self.with_db(move |db| {
-            let mut statement = db.prepare(&format!(
-                "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id DESC"
-            ))?;
-            let mut emails = Vec::new();
-            for email in statement.query_map([], summary_from_row)? {
-                let email = email?;
-                if limit.is_some_and(|limit| emails.len() >= limit) {
-                    break;
-                }
-                if filter.matches(&email) {
-                    emails.push(email);
-                }
-            }
-            Ok(emails)
-        })
-        .await
+        self.with_db(move |db| select(db, &filter, limit)).await
     }
 
     /// Marks one Email read. Nothing happens if no Email has this id.
@@ -157,6 +138,30 @@ impl Inbox {
             Ok(())
         })
         .await
+    }
+
+    /// Deletes the `selected` Emails and returns how many there were. Emits
+    /// [`CoreEvent::InboxChanged`] if there were any.
+    pub(crate) async fn delete(&self, selected: EmailSelection) -> Result<usize, Error> {
+        let deleted = self
+            .with_db(move |db| {
+                // Selected under the same lock as the deletion, so an Email
+                // Captured meanwhile is never deleted unseen.
+                let ids = match selected {
+                    EmailSelection::All => return Ok(db.execute("DELETE FROM emails", [])?),
+                    EmailSelection::Ids(ids) => ids,
+                    EmailSelection::Matching(filter) => select(db, &filter, None)?
+                        .into_iter()
+                        .map(|email| email.id)
+                        .collect(),
+                };
+                delete_ids(db, &ids)
+            })
+            .await?;
+        if deleted > 0 {
+            let _ = self.events.send(CoreEvent::InboxChanged);
+        }
+        Ok(deleted)
     }
 
     /// The view of one Email, or `None` if no Email has this id.
@@ -213,6 +218,46 @@ fn migrate(db: &mut Connection) -> Result<(), Error> {
     }
     transaction.commit()?;
     Ok(())
+}
+
+/// The Emails `filter` matches, newest first, at most `limit` of them.
+///
+/// Filtering happens here rather than in SQL: SQLite only folds ASCII case,
+/// and the Inbox is small (bounded by the Retention limit).
+fn select(
+    db: &Connection,
+    filter: &EmailFilter,
+    limit: Option<usize>,
+) -> Result<Vec<EmailSummary>, Error> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {SUMMARY_COLUMNS} FROM emails ORDER BY id DESC"
+    ))?;
+    let mut emails = Vec::new();
+    for email in statement.query_map([], summary_from_row)? {
+        let email = email?;
+        if limit.is_some_and(|limit| emails.len() >= limit) {
+            break;
+        }
+        if filter.matches(&email) {
+            emails.push(email);
+        }
+    }
+    Ok(emails)
+}
+
+/// Deletes the Emails with these ids, all or none, and returns how many
+/// there were.
+fn delete_ids(db: &Connection, ids: &[EmailId]) -> Result<usize, Error> {
+    let transaction = db.unchecked_transaction()?;
+    let mut deleted = 0;
+    {
+        let mut statement = transaction.prepare("DELETE FROM emails WHERE id = ?1")?;
+        for id in ids {
+            deleted += statement.execute([id.0])?;
+        }
+    }
+    transaction.commit()?;
+    Ok(deleted)
 }
 
 fn summary_from_row(row: &Row<'_>) -> rusqlite::Result<EmailSummary> {

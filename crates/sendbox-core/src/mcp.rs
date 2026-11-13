@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::inbox::Inbox;
-use crate::{EmailFilter, EmailId, EmailSummary, EmailView};
+use crate::{EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView};
 
 /// The path of the MCP endpoint, as in `http://127.0.0.1:1026/mcp`.
 const ENDPOINT: &str = "/mcp";
@@ -249,6 +249,62 @@ impl From<EmailView> for Email {
     }
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DeleteParams {
+    /// Delete the Emails with these ids, as list_emails gives them.
+    ids: Option<Vec<i64>>,
+    /// Delete the Emails whose sender (From header or envelope) contains this, ignoring case.
+    from: Option<String>,
+    /// Delete the Emails with a recipient (To, Cc or envelope, so Bcc too) containing this, ignoring case.
+    to: Option<String>,
+    /// Delete the Emails whose subject contains this, ignoring case.
+    subject: Option<String>,
+    /// Delete the Emails Captured at or after this time (RFC 3339).
+    since: Option<DateTime<Utc>>,
+    /// Delete only Unread Emails.
+    #[serde(default)]
+    unread_only: bool,
+    /// Delete every Email, emptying the Inbox.
+    #[serde(default)]
+    all: bool,
+}
+
+impl DeleteParams {
+    /// The Emails the parameters select. An agent must say which Emails it
+    /// means, in exactly one way: deleting everything takes `all: true`,
+    /// never an empty request, and a mix could be read more than one way.
+    fn selection(self) -> Result<EmailSelection, String> {
+        let filter = EmailFilter {
+            from: self.from,
+            to: self.to,
+            subject: self.subject,
+            since: self.since.map(SystemTime::from),
+            unread_only: self.unread_only,
+        };
+        let filtered = filter != EmailFilter::default();
+        match (self.ids, filtered, self.all) {
+            (Some(ids), false, false) => {
+                Ok(EmailSelection::Ids(ids.into_iter().map(EmailId).collect()))
+            }
+            (None, true, false) => Ok(EmailSelection::Matching(filter)),
+            (None, false, true) => Ok(EmailSelection::All),
+            (None, false, false) => Err("Say which Emails to delete: their ids, \
+                 filters (from, to, subject, since, unread_only), or all: true to \
+                 empty the Inbox."
+                .to_string()),
+            _ => Err("Give only one of ids, filters (from, to, subject, since, \
+                 unread_only) or all: true, so that it is clear which Emails to delete."
+                .to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct Deleted {
+    /// How many Emails were deleted.
+    deleted: usize,
+}
+
 /// A time to the millisecond, which is all an agent needs to read or compare.
 fn to_date(time: SystemTime) -> DateTime<Utc> {
     DateTime::<Utc>::from(time).trunc_subsecs(3)
@@ -320,6 +376,26 @@ impl Tools {
             Err(error) => Err(error.to_string()),
         }
     }
+
+    #[tool(
+        description = "Delete Emails for good and return how many were deleted, to start \
+            a test from a known Inbox. Select them in exactly one way: by ids, by the \
+            list_emails filters (from, to, subject, since, unread_only; they combine), \
+            or with all: true to empty the Inbox. A call that selects nothing, or mixes \
+            these, is refused.",
+        annotations(destructive_hint = true)
+    )]
+    async fn delete_emails(
+        &self,
+        Parameters(params): Parameters<DeleteParams>,
+    ) -> Result<Json<Deleted>, String> {
+        let deleted = self
+            .inbox
+            .delete(params.selection()?)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(Json(Deleted { deleted }))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -330,7 +406,8 @@ impl ServerHandler for Tools {
             .with_instructions(
                 "Sendbox Captures every Email sent to its local SMTP server and never \
                  delivers any. Find Captured Emails with list_emails, then read one \
-                 (bodies, headers, links, attachments) with get_email.",
+                 (bodies, headers, links, attachments) with get_email. \
+                 Remove Emails with delete_emails.",
             )
     }
 }

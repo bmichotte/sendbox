@@ -442,23 +442,23 @@ struct SummaryHeaders {
 
 impl SummaryHeaders {
     fn parse(raw_source: &[u8]) -> Self {
-        let Some(message) = mail_parser::MessageParser::default().parse_headers(raw_source) else {
+        let Some(parsed) = mail_parser::MessageParser::default().parse_headers(raw_source) else {
             return Self::default();
         };
         Self {
-            from: message
+            from: parsed
                 .from()
                 .and_then(|from| from.first())
                 .and_then(|mailbox| mailbox.address())
                 .map(str::to_owned),
-            to: addresses(message.to()),
-            cc: addresses(message.cc()),
-            subject: message.subject().map(str::to_owned),
+            to: addresses(parsed.to()),
+            cc: addresses(parsed.cc()),
+            subject: parsed.subject().map(str::to_owned),
         }
     }
 }
 
-/// Every mailbox address in an address header, in order (names dropped).
+/// Every address in an address header, in order (display names dropped).
 fn addresses(list: Option<mail_parser::AddressList<'_>>) -> Vec<String> {
     list.map(|list| {
         list.mailboxes()

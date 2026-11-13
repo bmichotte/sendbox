@@ -78,8 +78,8 @@ impl AttachmentContent {
     /// The attachment at `index` in [`EmailView::attachments`] of the Email
     /// with this raw source, if there is one.
     pub(crate) fn parse(raw_source: &[u8], index: usize) -> Option<Self> {
-        let message = MessageParser::default().parse(raw_source)?;
-        let part = message.attachments().nth(index)?;
+        let parsed = MessageParser::default().parse(raw_source)?;
+        let part = parsed.attachments().nth(index)?;
         Some(Self {
             attachment: attachment(part),
             bytes: part.decoded().into_owned(),
@@ -90,8 +90,9 @@ impl AttachmentContent {
 impl EmailView {
     /// Builds the view of `summary`'s Email from its raw source.
     pub(crate) fn parse(summary: EmailSummary, raw_source: &[u8]) -> Self {
-        let Some(message) = MessageParser::default().parse(raw_source) else {
-            // Not a message at all (SMTP accepts any bytes): show them as text.
+        let Some(parsed) = MessageParser::default().parse(raw_source) else {
+            // Not formatted as an Email at all (SMTP accepts any bytes):
+            // show them as text.
             let text = String::from_utf8_lossy(raw_source).into_owned();
             return Self {
                 summary,
@@ -104,16 +105,16 @@ impl EmailView {
                 raw_source_text: raw_source_text(raw_source),
             };
         };
-        let text = text_body(&message);
-        let html = html_body(&message);
+        let text = text_body(&parsed);
+        let html = html_body(&parsed);
         Self {
             summary,
             links: links(html.as_deref(), text.as_deref()),
-            html_with_inline_images: html.as_deref().map(|html| inline_parts(&message, html)),
+            html_with_inline_images: html.as_deref().map(|html| inline_parts(&parsed, html)),
             text,
             html,
-            headers: headers(&message),
-            attachments: attachments(&message),
+            headers: headers(&parsed),
+            attachments: attachments(&parsed),
             raw_source_text: raw_source_text(raw_source),
         }
     }
@@ -129,8 +130,8 @@ fn raw_source_text(raw_source: &[u8]) -> String {
 
 /// The real text parts. When an Email has only HTML, `mail-parser` offers
 /// its HTML part as the text body too; that is not text, so it is skipped.
-fn text_body(message: &Message<'_>) -> Option<String> {
-    message
+fn text_body(parsed: &Message<'_>) -> Option<String> {
+    parsed
         .text_body()
         .filter(|part| matches!(part.kind(), PartKind::Text))
         .filter_map(|part| part.text())
@@ -140,8 +141,8 @@ fn text_body(message: &Message<'_>) -> Option<String> {
 
 /// The real HTML part, with any `<meta charset>` set to UTF-8 to match the
 /// decoded text. An Email without one gets no generated HTML.
-fn html_body(message: &Message<'_>) -> Option<String> {
-    message
+fn html_body(parsed: &Message<'_>) -> Option<String> {
+    parsed
         .html_body()
         .find(|part| matches!(part.kind(), PartKind::Html))
         .and_then(|part| part.html_utf8())
@@ -153,10 +154,11 @@ fn html_body(message: &Message<'_>) -> Option<String> {
 static CID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\bcid:([^\s"'<>()&]+)"#).expect("valid regex"));
 
-/// `html` with its `cid:` references to parts of `message` replaced by the
-/// parts themselves, as `data:` URIs. A reference to no part stays as is.
-fn inline_parts(message: &Message<'_>, html: &str) -> String {
-    let parts: HashMap<&str, MessagePart<'_>> = message
+/// `html` with its `cid:` references to parts of the `parsed` Email replaced
+/// by the parts themselves, as `data:` URIs. A reference to no part stays as
+/// is.
+fn inline_parts(parsed: &Message<'_>, html: &str) -> String {
+    let parts: HashMap<&str, MessagePart<'_>> = parsed
         .parts()
         .filter_map(|part| Some((part.content_id()?, part)))
         .collect();
@@ -203,8 +205,8 @@ fn data_uri(part: MessagePart<'_>) -> String {
     )
 }
 
-fn headers(message: &Message<'_>) -> Vec<Header> {
-    message
+fn headers(parsed: &Message<'_>) -> Vec<Header> {
+    parsed
         .headers()
         .into_iter()
         .map(|header| Header {
@@ -220,8 +222,8 @@ fn headers(message: &Message<'_>) -> Vec<Header> {
 }
 
 /// The attachments, in the order [`AttachmentContent::parse`] indexes them.
-fn attachments(message: &Message<'_>) -> Vec<Attachment> {
-    message.attachments().map(attachment).collect()
+fn attachments(parsed: &Message<'_>) -> Vec<Attachment> {
+    parsed.attachments().map(attachment).collect()
 }
 
 fn attachment(part: MessagePart<'_>) -> Attachment {

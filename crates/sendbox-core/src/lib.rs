@@ -148,8 +148,9 @@ fn contains_any<'a>(needle: &Option<String>, haystacks: impl IntoIterator<Item =
 pub enum CoreEvent {
     /// An Email was Captured into the Inbox.
     EmailCaptured(EmailSummary),
-    /// The Inbox changed other than by a Capture (Emails were deleted, say):
-    /// list it again.
+    /// The Inbox changed other than by a Capture (Emails were deleted, or an
+    /// Unread Email was read, by the user or an agent): list it again, and
+    /// count the Unread Emails again.
     InboxChanged,
 }
 
@@ -216,8 +217,14 @@ impl CoreHandle {
         self.inbox.attachment(id, index).await
     }
 
-    /// Marks one Email read, as when the user opens it. Nothing happens if no
-    /// Email has this id.
+    /// How many Emails in the whole Inbox are Unread, as the tray shows it.
+    pub async fn unread_count(&self) -> Result<usize, Error> {
+        self.inbox.unread_count().await
+    }
+
+    /// Marks one Email read, as when the user opens it, whether or not MCP
+    /// reads mark Emails read. Emits [`CoreEvent::InboxChanged`] if it was
+    /// Unread; nothing happens if no Email has this id.
     pub async fn mark_read(&self, id: EmailId) -> Result<(), Error> {
         self.inbox.mark_read(id).await
     }

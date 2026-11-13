@@ -77,7 +77,7 @@ async fn show_unread_count(app: &AppHandle) {
     let core = app.state::<Core>();
     let Ok(core) = core.handle() else { return };
     if let Ok(unread) = core.unread_count().await {
-        let _ = tray::show_unread_count(app, unread);
+        tray::show_unread_count(app, unread);
     }
 }
 

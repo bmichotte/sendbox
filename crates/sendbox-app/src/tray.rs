@@ -3,11 +3,11 @@
 //! while a port is in use, an error state: a badge on the icon, and the
 //! menu and tooltip say which port.
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, PoisonError};
 
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
 use crate::{inbox, window};
@@ -21,6 +21,7 @@ const QUIT: &str = "quit";
 
 /// What the tray shows, kept whole: on Windows the Unread count and the
 /// error state share the icon and the tooltip, so each change redraws both.
+/// Only the main thread uses it: see [`update`].
 #[derive(Default)]
 struct Shown {
     unread: usize,
@@ -99,56 +100,69 @@ fn in_use(port: u16) -> String {
 /// the count as text next to the menu bar icon; Windows cannot put text next
 /// to a tray icon, so it draws the count on the icon and says it in the
 /// tooltip.
-pub fn show_unread_count(app: &AppHandle, unread: usize) -> tauri::Result<()> {
-    let Some(tray) = app.tray_by_id(TRAY) else {
-        return Ok(());
-    };
-    let mut shown = shown(app);
-    shown.unread = unread;
-    #[cfg(target_os = "macos")]
-    tray.set_title((unread > 0).then(|| unread.to_string()))?;
-    #[cfg(not(target_os = "macos"))]
-    show_on_icon(&tray, &shown)?;
-    Ok(())
+pub fn show_unread_count(app: &AppHandle, unread: usize) {
+    update(app, move |_, tray, shown| {
+        shown.unread = unread;
+        #[cfg(target_os = "macos")]
+        tray.set_title((unread > 0).then(|| unread.to_string()))?;
+        #[cfg(not(target_os = "macos"))]
+        show_on_icon(tray, shown)?;
+        Ok(())
+    });
 }
 
 /// Shows the error state while `ports` are in use, or clears it when there
 /// are none.
-pub fn show_ports_in_use(app: &AppHandle, ports: &[u16]) -> tauri::Result<()> {
-    let Some(tray) = app.tray_by_id(TRAY) else {
-        return Ok(());
-    };
-    let mut shown = shown(app);
-    shown.ports_in_use = ports.to_vec();
-    tray.set_menu(Some(menu(app, ports)?))?;
-    #[cfg(target_os = "macos")]
-    {
-        let mut icon = template_icon();
-        if !ports.is_empty() {
-            // Only alpha counts in a template: an opaque badge, its "!" a hole.
-            icon = with_error_badge(&icon, [0, 0, 0, 0xFF], CLEAR);
+pub fn show_ports_in_use(app: &AppHandle, ports: Vec<u16>) {
+    update(app, move |app, tray, shown| {
+        tray.set_menu(Some(menu(app, &ports)?))?;
+        shown.ports_in_use = ports;
+        #[cfg(target_os = "macos")]
+        {
+            let mut icon = template_icon();
+            if !shown.ports_in_use.is_empty() {
+                // Only alpha counts in a template: an opaque badge, its "!" a hole.
+                icon = with_error_badge(&icon, [0, 0, 0, 0xFF], CLEAR);
+            }
+            // `set_icon` would drop the template flag.
+            tray.set_icon_with_as_template(Some(icon), true)?;
+            tray.set_tooltip(Some(tooltip(shown)))?;
         }
-        // `set_icon` would drop the template flag.
-        tray.set_icon_with_as_template(Some(icon), true)?;
-        tray.set_tooltip(Some(tooltip(&shown)))?;
-    }
-    #[cfg(not(target_os = "macos"))]
-    show_on_icon(&tray, &shown)?;
-    Ok(())
+        #[cfg(not(target_os = "macos"))]
+        show_on_icon(tray, shown)?;
+        Ok(())
+    });
 }
 
-/// Held while the tray is updated, so that updates show in order.
-fn shown(app: &AppHandle) -> MutexGuard<'_, Shown> {
-    app.state::<Mutex<Shown>>()
-        .inner()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Makes `change` to the tray and to what it shows on the main thread: at
+/// once from the main thread, otherwise as soon as the main thread is free,
+/// without waiting for it. Changes show in the order they were made.
+///
+/// Off the main thread, each tray call waits for the main thread to make it,
+/// so a thread holding the lock on what the tray shows while it calls the
+/// tray could wait forever on a main thread waiting for that lock. Only the
+/// main thread ever takes the lock.
+fn update(
+    app: &AppHandle,
+    change: impl FnOnce(&AppHandle, &TrayIcon, &mut Shown) -> tauri::Result<()> + Send + 'static,
+) {
+    let app = app.clone();
+    let on_main_thread = app.clone();
+    // A failed change leaves the tray as it was: there is nobody to tell.
+    let _ = on_main_thread.run_on_main_thread(move || {
+        let Some(tray) = app.tray_by_id(TRAY) else {
+            return;
+        };
+        let shown = app.state::<Mutex<Shown>>();
+        let mut shown = shown.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = change(&app, &tray, &mut shown);
+    });
 }
 
 /// The Windows icon and tooltip: the error state takes the icon over the
 /// Unread count, which the tooltip still gives.
 #[cfg(not(target_os = "macos"))]
-fn show_on_icon(tray: &tauri::tray::TrayIcon, shown: &Shown) -> tauri::Result<()> {
+fn show_on_icon(tray: &TrayIcon, shown: &Shown) -> tauri::Result<()> {
     let icon = if !shown.ports_in_use.is_empty() {
         with_error_badge(&app_icon(), [0xDC, 0x26, 0x26, 0xFF], [0xFF; 4])
     } else if shown.unread > 0 {

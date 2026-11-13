@@ -89,6 +89,6 @@ pub fn watch(app: &AppHandle) {
 
 fn show(app: &AppHandle, core: &CoreHandle) {
     let listeners = Listeners::of(core);
-    let _ = tray::show_ports_in_use(app, &listeners.ports_in_use());
+    tray::show_ports_in_use(app, listeners.ports_in_use());
     let _ = app.emit(LISTENERS_CHANGED, listeners);
 }

@@ -18,6 +18,17 @@
         "minWidth": 420,
         "minHeight": 300,
         "visible": false
+      },
+      {
+        "label": "settings",
+        "title": "Sendbox Settings",
+        "width": 480,
+        "height": 360,
+        "resizable": false,
+        "minimizable": false,
+        "maximizable": false,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {

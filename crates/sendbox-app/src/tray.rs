@@ -8,6 +8,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use crate::window;
 
 const OPEN: &str = "open";
+const SETTINGS: &str = "settings";
 const QUIT: &str = "quit";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
@@ -15,6 +16,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         app,
         &[
             &MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?,
+            &MenuItem::with_id(app, SETTINGS, "Settings…", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?,
         ],
@@ -25,6 +27,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             OPEN => window::show(app),
+            SETTINGS => window::show_settings(app),
             QUIT => app.exit(0),
             _ => {}
         })

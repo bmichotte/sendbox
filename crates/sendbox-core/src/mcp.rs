@@ -24,7 +24,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::inbox::Inbox;
 use crate::listener::Serve;
-use crate::{CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView};
+use crate::{
+    Attachment, CoreEvent, EmailFilter, EmailId, EmailSelection, EmailSummary, EmailView, Header,
+};
 
 /// The path of the MCP endpoint, as in `http://127.0.0.1:1026/mcp`.
 const ENDPOINT: &str = "/mcp";
@@ -160,18 +162,11 @@ struct GetParams {
 /// One Email as `get_email` shows it: everything but the attachments' bytes.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 struct Email {
-    id: i64,
-    /// The From header address, else the envelope sender.
-    from: Option<String>,
-    /// The To header addresses.
-    to: Vec<String>,
+    // What `list_emails` shows of it, then the rest.
+    #[serde(flatten)]
+    summary: Summary,
     /// The Cc header addresses.
     cc: Vec<String>,
-    subject: Option<String>,
-    /// When Sendbox Captured the Email.
-    date: DateTime<Utc>,
-    /// False while the Email is Unread.
-    read: bool,
     /// Who the sending app said the Email was from and to over SMTP; the
     /// recipients include Bcc.
     envelope: Envelope,
@@ -180,11 +175,11 @@ struct Email {
     /// The HTML body, if any.
     html: Option<String>,
     /// Every header field, in order, decoded.
-    headers: Vec<HeaderField>,
+    headers: Vec<Header>,
     /// Link targets in the HTML, then URLs in the text, each once.
     links: Vec<String>,
     /// What is attached (the content is not available over MCP).
-    attachments: Vec<AttachmentInfo>,
+    attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -195,25 +190,10 @@ struct Envelope {
     recipients: Vec<String>,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct HeaderField {
-    name: String,
-    value: String,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-struct AttachmentInfo {
-    /// The file name, if the sender gave one.
-    name: Option<String>,
-    content_type: String,
-    /// Bytes, once decoded.
-    size: u64,
-}
-
 impl From<EmailView> for Email {
     fn from(view: EmailView) -> Self {
         let EmailView {
-            summary,
+            mut summary,
             text,
             html,
             // Inline images are attachment bytes, which agents never get.
@@ -224,36 +204,21 @@ impl From<EmailView> for Email {
             links,
             attachments,
         } = view;
+        // What the summary as listed leaves out, taken first.
+        let cc = std::mem::take(&mut summary.cc);
+        let envelope = Envelope {
+            sender: summary.envelope_sender.take(),
+            recipients: std::mem::take(&mut summary.envelope_recipients),
+        };
         Self {
-            id: summary.id.0,
-            from: summary.sender().map(str::to_owned),
-            date: to_date(summary.received_at),
-            read: summary.read,
-            envelope: Envelope {
-                sender: summary.envelope_sender,
-                recipients: summary.envelope_recipients,
-            },
-            to: summary.to,
-            cc: summary.cc,
-            subject: summary.subject,
+            summary: Summary::from(summary),
+            cc,
+            envelope,
             text,
             html,
-            headers: headers
-                .into_iter()
-                .map(|header| HeaderField {
-                    name: header.name,
-                    value: header.value,
-                })
-                .collect(),
+            headers,
             links,
-            attachments: attachments
-                .into_iter()
-                .map(|attachment| AttachmentInfo {
-                    name: attachment.name,
-                    content_type: attachment.content_type,
-                    size: attachment.size,
-                })
-                .collect(),
+            attachments,
         }
     }
 }

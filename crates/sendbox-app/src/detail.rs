@@ -26,18 +26,13 @@ pub struct EmailDetail {
     text: Option<String>,
     /// The HTML body with its inline images embedded, ready for the frame.
     html: Option<String>,
-    headers: Vec<HeaderField>,
+    headers: Vec<Header>,
     attachments: Vec<AttachmentInfo>,
     /// The raw source as text, every byte kept (see the core's view).
     raw_source: String,
 }
 
-#[derive(Serialize)]
-pub struct HeaderField {
-    name: String,
-    value: String,
-}
-
+/// The core's [`Attachment`], in the UI's camelCase.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentInfo {
@@ -64,10 +59,7 @@ impl EmailDetail {
             row: EmailRow::from(summary),
             text,
             html: html_with_inline_images,
-            headers: headers
-                .into_iter()
-                .map(|Header { name, value }| HeaderField { name, value })
-                .collect(),
+            headers,
             attachments: attachments
                 .into_iter()
                 .map(

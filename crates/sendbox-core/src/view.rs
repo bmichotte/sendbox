@@ -11,6 +11,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use mail_parser::{HeaderForm, Message, MessageParser, MessagePart, PartKind};
 use regex::{Captures, Regex};
+use rmcp::schemars;
+use serde::Serialize;
 
 use crate::EmailSummary;
 
@@ -42,7 +44,8 @@ pub struct EmailView {
 }
 
 /// One header field of an Email.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Agents get it as is over MCP, so its docs are theirs too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Header {
     /// The name as written, such as `Subject` or `X-Mailer`.
     pub name: String,
@@ -51,7 +54,9 @@ pub struct Header {
 }
 
 /// What a reader may know about an attachment before saving it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Agents get it as is over MCP, so its docs are theirs too; they never get
+// the content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Attachment {
     /// The file name the sender gave, if any.
     pub name: Option<String>,

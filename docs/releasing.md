@@ -47,6 +47,14 @@ The macOS build signs Sendbox with a Developer ID Application certificate and no
 
 The workflow writes the `.p8` to a temporary file for the build and deletes it afterwards. `KEYCHAIN_PASSWORD` is not used: Tauri imports the certificate into a throwaway keychain with a random password of its own.
 
+To create or renew them (the certificate expires after five years), the Apple Developer Account Holder runs this from the repository, on a Mac with `gh` logged in:
+
+```sh
+./scripts/setup-macos-signing.sh
+```
+
+It walks through creating the Developer ID Application certificate and the App Store Connect API key in the browser, packages and checks the certificate, and sets the six secrets with `gh secret set`. Secret values are never printed; working files stay in `~/.sendbox-signing/`.
+
 ## Dry run: a signed `.dmg` without a release
 
 To check signing and notarization before tagging, run the Release workflow by hand on a pushed branch:

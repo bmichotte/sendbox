@@ -3,8 +3,7 @@ name: Release
 # Pushing a version tag (`v` + the version in Cargo.toml, e.g. v0.2.0) builds
 # Sendbox for macOS and Windows and publishes the installers as a GitHub
 # Release. The release stays a draft until every build has uploaded, so
-# colleagues never see a half-filled release. See "Cutting a release" in the
-# README.
+# colleagues never see a half-filled release. See docs/releasing.md.
 
 on:
   push:

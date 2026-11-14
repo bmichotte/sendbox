@@ -1,6 +1,33 @@
 mod common;
 
-use common::{SmtpClient, TestCore};
+use common::{Agent, STEP_TIMEOUT, SmtpClient, TestCore, test_config};
+use sendbox_core::{Config, Listener, ListenerStatus};
+use serde_json::json;
+use tokio::time::timeout;
+
+#[tokio::test]
+async fn shutdown_releases_the_mcp_port_even_with_an_agent_connected() {
+    let first = TestCore::start().await;
+    let port = first.mcp_port();
+    assert_ne!(port, 0, "the handle reports the bound port");
+    let agent = first.agent().await;
+    agent.list_emails(json!({})).await;
+
+    timeout(STEP_TIMEOUT, first.handle.shutdown())
+        .await
+        .expect("shutdown does not wait for connected agents");
+
+    let refused = Agent::try_connect(port).await;
+    assert!(refused.is_err(), "an agent gets a plain connection error");
+    let data_dir = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        mcp_port: port,
+        ..test_config(&data_dir)
+    };
+    let second = TestCore::start_with_config(config, data_dir).await;
+    assert_eq!(second.mcp_port(), port);
+    second.agent().await.list_emails(json!({})).await;
+}
 
 #[tokio::test]
 async fn shutdown_releases_the_smtp_port_for_a_new_core() {
@@ -16,9 +43,12 @@ async fn shutdown_releases_the_smtp_port_for_a_new_core() {
 
     first.handle.shutdown().await;
 
-    // Starting on that exact port fails if it is still taken.
     let second = TestCore::start_with(port, tempfile::TempDir::new().unwrap()).await;
-    assert_eq!(second.smtp_port(), port);
+    assert_eq!(
+        second.listener_status(Listener::Smtp),
+        ListenerStatus::Running { port },
+        "the port is free again"
+    );
 }
 
 #[tokio::test]
@@ -31,12 +61,12 @@ async fn the_inbox_survives_a_restart_on_the_same_data_directory() {
             .await;
     }
     drop(smtp);
-    let listed_before = core.list_emails().await.unwrap();
+    let listed_before = core.inbox().await;
     assert_eq!(listed_before.len(), 2);
 
     let core = core.restart().await;
 
-    assert_eq!(core.list_emails().await.unwrap(), listed_before);
+    assert_eq!(core.inbox().await, listed_before);
     let raw_source = core.raw_source(listed_before[0].id).await.unwrap();
     assert_eq!(
         raw_source.as_deref(),
@@ -45,23 +75,25 @@ async fn the_inbox_survives_a_restart_on_the_same_data_directory() {
 }
 
 #[tokio::test]
-async fn the_smtp_listener_is_unreachable_from_other_interfaces() {
+async fn the_smtp_and_mcp_listeners_are_unreachable_from_other_interfaces() {
     let core = TestCore::start().await;
     let Some(lan_address) = non_loopback_ipv4() else {
         eprintln!("skipped: this machine has no non-loopback IPv4 address");
         return;
     };
 
-    let attempt = tokio::time::timeout(
-        common::STEP_TIMEOUT,
-        tokio::net::TcpStream::connect((lan_address, core.smtp_port())),
-    )
-    .await;
+    for (listener, port) in [("SMTP", core.smtp_port()), ("MCP", core.mcp_port())] {
+        let attempt = timeout(
+            STEP_TIMEOUT,
+            tokio::net::TcpStream::connect((lan_address, port)),
+        )
+        .await;
 
-    assert!(
-        !matches!(attempt, Ok(Ok(_))),
-        "connected to the SMTP port through {lan_address}"
-    );
+        assert!(
+            !matches!(attempt, Ok(Ok(_))),
+            "connected to the {listener} port through {lan_address}"
+        );
+    }
 }
 
 /// The address this machine would use to reach the network, if any. Nothing
@@ -105,7 +137,7 @@ async fn an_inbox_written_before_from_and_to_were_kept_still_opens_and_captures(
         .await;
 
     assert_eq!(reply.code, 250);
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     let listed: Vec<_> = emails
         .iter()
         .map(|email| {

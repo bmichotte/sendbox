@@ -14,16 +14,99 @@ export interface EmailRow {
   /** Addresses in the `To` header. */
   to: string[];
   subject: string | null;
+  /** False while the Email is Unread. */
+  read: boolean;
 }
 
-/** Every Email in the Inbox, newest first. Rejects with the reason if the core is not running. */
-export function listEmails(): Promise<EmailRow[]> {
-  return invoke("list_emails");
+/** One Email in full, as the detail pane shows it. Mirrors `EmailDetail` in the shell. */
+export interface EmailDetail extends EmailRow {
+  /** Addresses in the `Cc` header. */
+  cc: string[];
+  /** The SMTP `MAIL FROM` address; null for a null sender (`<>`). */
+  envelopeSender: string | null;
+  /** The SMTP `RCPT TO` addresses, Bcc included. */
+  envelopeRecipients: string[];
+  /** The plain-text body; null if the Email has none. */
+  text: string | null;
+  /** The HTML body with its inline images embedded; null if the Email has none. */
+  html: string | null;
+  /** Every header field, in order, decoded. */
+  headers: Header[];
+  attachments: Attachment[];
+  /**
+   * The Email exactly as received, as text: as is if it is UTF-8, otherwise one character per byte
+   * (ISO-8859-1), so that every byte shows.
+   */
+  rawSource: string;
 }
 
-/** The port the SMTP listener is bound to. */
-export function smtpPort(): Promise<number> {
-  return invoke("smtp_port");
+export interface Header {
+  name: string;
+  value: string;
+}
+
+export interface Attachment {
+  /** The file name the sender gave, if any. */
+  name: string | null;
+  contentType: string;
+  /** Size in bytes, once decoded. */
+  size: number;
+}
+
+/** Which Sender tab: the one of `address`, or "(no sender)" when null. Mirrors `TabKey` in the shell. */
+export interface SenderTabKey {
+  address: string | null;
+}
+
+/** One Sender tab. Mirrors `SenderTabRow` in the shell. */
+export interface SenderTab extends SenderTabKey {
+  /** How many of its Emails are Unread. */
+  unread: number;
+}
+
+/** "All" and the Sender tabs. Mirrors `Tabs` in the shell. */
+export interface Tabs {
+  /** How many Emails in the whole Inbox are Unread, for "All". */
+  unread: number;
+  /** Ordered by their most recent Email; none for an empty Inbox. */
+  senders: SenderTab[];
+}
+
+/**
+ * The Emails of Sender tab `tab` (every Email when null, for "All") whose sender, recipients (To,
+ * Cc or Bcc) or subject contain `search`, ignoring case (any Email when it is empty), newest first.
+ * Rejects with the reason if the core is not running.
+ */
+export function listEmails(tab: SenderTabKey | null, search: string): Promise<EmailRow[]> {
+  return invoke("list_emails", { tab, search });
+}
+
+/** "All" and the Sender tabs, with their Unread counts. */
+export function listTabs(): Promise<Tabs> {
+  return invoke("tabs");
+}
+
+/** One Email in full. Rejects with the reason if it is no longer in the Inbox. */
+export function getEmail(id: number): Promise<EmailDetail> {
+  return invoke("get_email", { id });
+}
+
+/**
+ * Asks the user where to save attachment `index` (in `EmailDetail.attachments`) of an Email,
+ * then saves it there. Resolves to false if the user cancelled.
+ */
+export function saveAttachment(emailId: number, index: number): Promise<boolean> {
+  return invoke("save_attachment", { emailId, index });
+}
+
+/** Deletes one Email; the Inbox-changed event follows. */
+export function deleteEmail(id: number): Promise<void> {
+  return invoke("delete_email", { id });
+}
+
+/** Asks the user to confirm, then deletes every Email. Resolves to whether the Inbox was cleared. */
+export function clearAll(): Promise<boolean> {
+  return invoke("clear_all");
 }
 
 /** Calls `handler` whenever the Inbox changes, until the returned function is called. */

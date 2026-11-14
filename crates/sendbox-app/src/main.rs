@@ -5,7 +5,13 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
+mod badge;
+mod core_events;
+mod detail;
 mod inbox;
+mod listeners;
+mod settings;
 mod tray;
 mod window;
 
@@ -22,11 +28,30 @@ fn main() {
             tauri_plugin_window_state::Builder::default()
                 // Not VISIBLE: the window stays hidden at launch, like any tray app.
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
+                // The Settings window opens centred, at its fixed size.
+                .with_denylist(&[window::SETTINGS])
                 .build(),
         )
+        // Save dialogs for attachments and Clear all confirmations; only Rust
+        // shows them, so the window gets no dialog permission.
+        .plugin(tauri_plugin_dialog::init());
+    // Launch at login, off until the user turns it on in Settings. macOS
+    // needs no plugin: Sendbox asks the system itself (autostart.rs).
+    #[cfg(not(target_os = "macos"))]
+    let app = app.plugin(tauri_plugin_autostart::Builder::new().build());
+    let app = app
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
-            inbox::smtp_port
+            inbox::tabs,
+            inbox::delete_email,
+            inbox::clear_all,
+            detail::get_email,
+            detail::save_attachment,
+            settings::get_settings,
+            settings::set_settings,
+            settings::launch_at_login,
+            settings::set_launch_at_login,
+            listeners::listeners
         ])
         .setup(|app| {
             // No Dock icon. `LSUIElement` in Info.plist avoids the flash at launch
@@ -35,8 +60,11 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             #[cfg(target_os = "macos")]
             app.set_menu(window::macos_app_menu(app.handle())?)?;
-            inbox::start(app.handle())?;
+            // The tray first, so that it shows the Unread count from the start.
             tray::create(app.handle())?;
+            inbox::start(app.handle(), settings::core_config(app.handle())?);
+            // Once both exist: the tray shows a port in use from the start.
+            listeners::watch(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

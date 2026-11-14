@@ -70,10 +70,10 @@ async fn utf8_addresses_and_subject_and_an_8bit_body_are_captured_intact() {
 
     send_with_lettre(core.smtp_port(), message).await;
 
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     let email = &emails[0];
-    assert_eq!(email.envelope_sender, "jöhn@exämple.test");
+    assert_eq!(email.envelope_sender.as_deref(), Some("jöhn@exämple.test"));
     assert_eq!(email.envelope_recipients, ["zoë@exämple.test"]);
     assert_eq!(email.subject.as_deref(), Some("Café ☕ prêt"));
     assert_eq!(core.raw_source(email.id).await.unwrap(), Some(sent));
@@ -86,7 +86,7 @@ async fn an_authenticated_lettre_session_without_tls_is_captured() {
 
     send_through(transport, welcome_email()).await;
 
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
     assert_eq!(emails[0].subject.as_deref(), Some("Welcome"));
 }
@@ -100,7 +100,7 @@ async fn auth_login_succeeds_with_any_credentials() {
 
     send_through(transport, welcome_email()).await;
 
-    assert_eq!(core.list_emails().await.unwrap().len(), 1);
+    assert_eq!(core.inbox().await.len(), 1);
 }
 
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn a_cancelled_or_unknown_auth_is_refused_and_the_session_goes_on() {
         )
         .await;
     assert_eq!(reply.code, 250);
-    assert_eq!(core.list_emails().await.unwrap().len(), 1);
+    assert_eq!(core.inbox().await.len(), 1);
 }
 
 #[tokio::test]
@@ -187,7 +187,7 @@ async fn data_over_the_size_limit_is_rejected_and_nothing_is_captured() {
         .await;
 
     assert_eq!(reply.code, 552);
-    assert!(core.list_emails().await.unwrap().is_empty());
+    assert!(core.inbox().await.is_empty());
     let next = smtp
         .send_transaction(
             "app@acme.test",
@@ -196,7 +196,7 @@ async fn data_over_the_size_limit_is_rejected_and_nothing_is_captured() {
         )
         .await;
     assert_eq!(next.code, 250, "the session goes on after the rejection");
-    assert_eq!(core.list_emails().await.unwrap().len(), 1);
+    assert_eq!(core.inbox().await.len(), 1);
 }
 
 #[tokio::test]
@@ -210,7 +210,7 @@ async fn an_email_exactly_at_the_size_limit_is_captured() {
         .await;
 
     assert_eq!(reply.code, 250);
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails[0].size, SIZE_LIMIT as u64);
 }
 
@@ -229,9 +229,9 @@ async fn a_null_sender_is_captured() {
         .await;
 
     assert_eq!(reply.code, 250);
-    let emails = core.list_emails().await.unwrap();
+    let emails = core.inbox().await;
     assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0].envelope_sender, "");
+    assert_eq!(emails[0].envelope_sender, None);
 }
 
 #[tokio::test]
@@ -266,8 +266,11 @@ async fn raw_utf8_headers_are_captured_intact() {
     smtp.write(format!("{raw_source}.\r\n").as_bytes()).await;
 
     assert_eq!(smtp.read_reply().await.code, 250);
-    let emails = core.list_emails().await.unwrap();
-    assert_eq!(emails[0].envelope_sender, "jöhn@exämple.test");
+    let emails = core.inbox().await;
+    assert_eq!(
+        emails[0].envelope_sender.as_deref(),
+        Some("jöhn@exämple.test")
+    );
     assert_eq!(emails[0].envelope_recipients, ["zoë@exämple.test"]);
     assert_eq!(emails[0].subject.as_deref(), Some("Café ☕ prêt"));
     assert_eq!(

@@ -18,17 +18,32 @@
         "minWidth": 420,
         "minHeight": 300,
         "visible": false
+      },
+      {
+        "label": "settings",
+        "title": "Sendbox Settings",
+        "width": 480,
+        "height": 560,
+        "resizable": false,
+        "minimizable": false,
+        "maximizable": false,
+        "center": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": "default-src 'self' ipc: http://ipc.localhost; style-src 'self'",
-      "devCsp": "default-src 'self' ipc: http://ipc.localhost ws://localhost:1420; style-src 'self' 'unsafe-inline'",
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: http: https:; style-src 'self' 'unsafe-inline' http: https:; font-src 'self' data: http: https:",
+      "devCsp": "default-src 'self' ipc: http://ipc.localhost ws://localhost:1420; img-src 'self' data: http: https:; style-src 'self' 'unsafe-inline' http: https:; font-src 'self' data: http: https:",
       "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
     "active": true,
+    "targets": ["dmg", "nsis"],
     "category": "DeveloperTool",
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

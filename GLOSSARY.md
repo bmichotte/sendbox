@@ -17,7 +17,7 @@ The single collection of all captured Emails. There is exactly one; there are no
 _Avoid_: mailbox, project
 
 **Sender tab**:
-A view of the Inbox showing only the Emails from one From address (ignoring display name and case). One exists per distinct From address present in the Inbox, alongside an "All" view of the whole Inbox.
+A view of the Inbox showing only the Emails from one sender: the From address (ignoring display name and case), or, for an Email without one, its envelope sender. Emails with neither are in the "(no sender)" tab. One exists per sender present in the Inbox, alongside an "All" view of the whole Inbox.
 _Avoid_: folder, project, category
 
 **Unread**:

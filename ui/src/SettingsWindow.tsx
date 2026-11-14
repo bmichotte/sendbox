@@ -3,6 +3,7 @@ import { type ListenerStatus, useListeners } from "./listeners";
 import { stopListening } from "./live";
 import {
   getSettings,
+  type LaunchAtLogin,
   launchAtLogin,
   onWindowFocused,
   type Settings,
@@ -13,7 +14,7 @@ import {
 /** The Settings window. Each change is saved and applied at once. */
 export function SettingsWindow() {
   const [settings, setSaved] = useState<Settings | null>(null);
-  const [atLogin, setAtLogin] = useState<boolean | null>(null);
+  const [atLogin, setAtLogin] = useState<LaunchAtLogin | null>(null);
   const [error, setError] = useState<string | null>(null);
   const listeners = useListeners();
 
@@ -22,7 +23,7 @@ export function SettingsWindow() {
     const fail = (reason: unknown) => active && setError(String(reason));
     getSettings().then((saved) => active && setSaved(saved), fail);
     const refreshAtLogin = () =>
-      launchAtLogin().then((enabled) => active && setAtLogin(enabled), fail);
+      launchAtLogin().then((state) => active && setAtLogin(state), fail);
     refreshAtLogin();
     // The window lives on, hidden, between uses; meanwhile the user may
     // change launch at login in the system settings.
@@ -42,10 +43,10 @@ export function SettingsWindow() {
   };
   const saveAtLogin = (enabled: boolean) => {
     setError(null);
-    setLaunchAtLogin(enabled).then(
-      () => setAtLogin(enabled),
-      (reason: unknown) => setError(String(reason)),
-    );
+    // Read back from the OS: macOS may wait for the user to allow it.
+    setLaunchAtLogin(enabled)
+      .then(launchAtLogin)
+      .then(setAtLogin, (reason: unknown) => setError(String(reason)));
   };
 
   return (
@@ -96,8 +97,13 @@ export function SettingsWindow() {
       )}
       <Toggle
         label="Launch at login"
-        checked={atLogin ?? false}
+        checked={atLogin === "on"}
         disabled={atLogin === null}
+        error={
+          atLogin === "needsApproval"
+            ? "macOS waits for you to allow Sendbox in System Settings › General › Login Items."
+            : null
+        }
         onChange={saveAtLogin}
       >
         Start Sendbox when you log in.
@@ -188,12 +194,14 @@ function Toggle({
   label,
   checked,
   disabled = false,
+  error = null,
   onChange,
   children,
 }: {
   label: string;
   checked: boolean;
   disabled?: boolean;
+  error?: string | null;
   onChange: (checked: boolean) => void;
   children: ReactNode;
 }) {
@@ -213,6 +221,11 @@ function Toggle({
         <label htmlFor={id} className="font-medium">
           {label}
         </label>
+        {error !== null && (
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+            {error}
+          </p>
+        )}
         <p className="text-xs text-neutral-500">{children}</p>
       </div>
     </div>

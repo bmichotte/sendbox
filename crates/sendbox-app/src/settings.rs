@@ -3,9 +3,7 @@
 //! startup, and are applied to the running core when they change: a new port
 //! moves its listener at once.
 //!
-//! Launch at login is not in the file: the OS keeps it, and the user can
-//! also change it there (System Settings, Task Manager), so it is read from
-//! the OS each time.
+//! Launch at login is not in the file: the OS keeps it (see `autostart.rs`).
 
 use std::num::{NonZeroU16, NonZeroUsize};
 use std::path::PathBuf;
@@ -13,8 +11,8 @@ use std::path::PathBuf;
 use sendbox_core::{Config, CoreHandle, Listener};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_autostart::ManagerExt as _;
 
+use crate::autostart::{self, LaunchAtLogin};
 use crate::inbox::Core;
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -132,21 +130,13 @@ pub async fn set_settings(
     Ok(())
 }
 
-/// Whether Sendbox starts when the user logs in.
+/// Whether Sendbox starts when the user logs in, as the OS has it.
 #[tauri::command]
-pub async fn launch_at_login(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
+pub async fn launch_at_login(app: AppHandle) -> Result<LaunchAtLogin, String> {
+    autostart::get(&app)
 }
 
 #[tauri::command]
 pub async fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
-    let autostart = app.autolaunch();
-    if enabled {
-        autostart.enable()
-    } else {
-        autostart.disable()
-    }
-    .map_err(|error| error.to_string())
+    autostart::set(&app, enabled)
 }

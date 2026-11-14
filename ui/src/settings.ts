@@ -35,8 +35,14 @@ export function setSettings(settings: Settings): Promise<void> {
   return invoke("set_settings", { settings });
 }
 
+/**
+ * Whether Sendbox starts when the user logs in. "needsApproval": turned on, but macOS waits for
+ * the user to allow it in System Settings first. Mirrors `LaunchAtLogin` in the shell.
+ */
+export type LaunchAtLogin = "off" | "on" | "needsApproval";
+
 /** Whether Sendbox starts when the user logs in, as the OS has it. */
-export function launchAtLogin(): Promise<boolean> {
+export function launchAtLogin(): Promise<LaunchAtLogin> {
   return invoke("launch_at_login");
 }
 

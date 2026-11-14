@@ -5,6 +5,7 @@
 // No console window next to the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod badge;
 mod core_events;
 mod detail;
@@ -33,9 +34,12 @@ fn main() {
         )
         // Save dialogs for attachments and Clear all confirmations; only Rust
         // shows them, so the window gets no dialog permission.
-        .plugin(tauri_plugin_dialog::init())
-        // Launch at login, off until the user turns it on in Settings.
-        .plugin(tauri_plugin_autostart::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init());
+    // Launch at login, off until the user turns it on in Settings. macOS
+    // needs no plugin: Sendbox asks the system itself (autostart.rs).
+    #[cfg(not(target_os = "macos"))]
+    let app = app.plugin(tauri_plugin_autostart::Builder::new().build());
+    let app = app
         .invoke_handler(tauri::generate_handler![
             inbox::list_emails,
             inbox::tabs,

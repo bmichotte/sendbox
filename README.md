@@ -56,14 +56,6 @@ Download the installer from the [latest release](https://github.com/bmichotte/se
 2. Open it and drag **Sendbox** into **Applications**.
 3. Open Sendbox from Applications. Its icon appears in the menu bar; there is no Dock icon.
 
-The app is not signed with an Apple Developer ID or notarized yet, so macOS blocks the first launch with "Apple could not verify “Sendbox” is free of malware". To allow it, once:
-
-1. Click **Done** on that dialog.
-2. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to "“Sendbox” was blocked".
-3. Confirm with your password or Touch ID, then click **Open Anyway** again.
-
-On macOS 14 or earlier, Control-click Sendbox in Applications, choose **Open**, then click **Open** in the dialog instead.
-
 ### Windows (10 or 11, x64)
 
 1. Download `Sendbox_<version>_x64-setup.exe`. If your browser warns that the file isn't commonly downloaded, choose **Keep**. In Edge: **…** → **Keep** → **Show more** → **Keep anyway**.

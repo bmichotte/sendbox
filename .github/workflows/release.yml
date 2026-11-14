@@ -3,11 +3,16 @@ name: Release
 # Pushing a version tag (`v` + the version in Cargo.toml, e.g. v0.2.0) builds
 # Sendbox for macOS and Windows and publishes the installers as a GitHub
 # Release. The release stays a draft until every build has uploaded, so
-# colleagues never see a half-filled release. See docs/releasing.md.
+# colleagues never see a half-filled release.
+#
+# Running the workflow by hand (workflow_dispatch) only builds the signed and
+# notarized macOS .dmg and keeps it as a workflow artifact: no tag check, no
+# release. Use it to check signing before tagging. See docs/releasing.md.
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,6 +20,7 @@ permissions:
 jobs:
   draft:
     name: Draft release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       release-id: ${{ steps.draft.outputs.release-id }}
@@ -31,29 +37,37 @@ jobs:
           release_id=$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
             -f tag_name="$GITHUB_REF_NAME" \
             -f name="Sendbox ${GITHUB_REF_NAME#v}" \
-            -f body="Download the \`.dmg\` (macOS) or the \`-setup.exe\` (Windows); see [Installing Sendbox](https://github.com/$GITHUB_REPOSITORY#installing-sendbox)." \
+            -f body="Download the \`.dmg\` (macOS) or the \`-setup.exe\` (Windows); see [Install](https://github.com/$GITHUB_REPOSITORY#install)." \
             -F draft=true \
             -F generate_release_notes=true \
             --jq .id)
           echo "release-id=$release_id" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build (${{ matrix.name }})
+  build-macos:
+    name: Build (macOS universal)
     needs: draft
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS universal
-            runner: macos-latest
-            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin
-          - name: Windows x64
-            runner: windows-latest
-            rust-targets: ''
-            args: ''
-    runs-on: ${{ matrix.runner }}
+    # On a tag, only once the draft exists; by hand, `draft` is skipped.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.draft.result == 'success') }}
+    runs-on: macos-latest
     steps:
+      - name: Check the signing and notarization secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+            APPLE_API_ISSUER APPLE_API_KEY APPLE_API_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error title=Missing secrets::The macOS build needs these repository secrets to sign and notarize: ${missing[*]}. See docs/releasing.md."
+            exit 1
+          fi
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
@@ -61,25 +75,104 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust-targets }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - run: npm ci
+      # Tauri reads the App Store Connect key from a file, not from an
+      # environment variable.
+      - name: Write the App Store Connect API key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          key_path="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+          (umask 077 && printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$key_path")
+          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+      # Tauri imports APPLE_CERTIFICATE into a throwaway keychain, signs the app
+      # with the hardened runtime, notarizes and staples it, then builds the
+      # .dmg around it and signs the .dmg. On a tag it attaches the bundles to
+      # the draft; by hand, releaseId is empty and it uploads nothing.
+      - uses: tauri-apps/tauri-action@v1
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # APPLE_API_KEY_PATH comes from the step above, through GITHUB_ENV.
+        with:
+          releaseId: ${{ needs.draft.outputs.release-id }}
+          args: --target universal-apple-darwin
+          # No auto-update in Sendbox, so no latest.json.
+          uploadUpdaterJson: false
+      # Tauri notarizes the .app but not the .dmg (tauri-apps/tauri#7533).
+      # Apple's advice is to notarize and staple the outermost container, so
+      # the .dmg passes Gatekeeper on its own, even offline.
+      - name: Notarize and staple the .dmg
+        id: dmg
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+        run: |
+          dmg=$(jq -r '.[] | select(endswith(".dmg"))' <<<"$ARTIFACT_PATHS")
+          if [ ! -f "$dmg" ]; then
+            echo "::error::Expected exactly one .dmg from the build, got: $ARTIFACT_PATHS"
+            exit 1
+          fi
+          auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          submission=$(xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json)
+          echo "$submission"
+          if [ "$(jq -r .status <<<"$submission")" != Accepted ]; then
+            xcrun notarytool log "$(jq -r .id <<<"$submission")" "${auth[@]}"
+            echo "::error::Apple did not accept the .dmg for notarization; its log is above."
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+      - name: Remove the App Store Connect API key
+        if: always() && env.APPLE_API_KEY_PATH != ''
+        run: rm -f "$APPLE_API_KEY_PATH"
+      - name: Replace the draft's .dmg with the notarized one
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Keep the .dmg as a workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.dmg.outputs.path }}
+          # Upload the .dmg itself, not a zip of it.
+          archive: false
+          if-no-files-found: error
+
+  build-windows:
+    name: Build (Windows x64)
+    needs: draft
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          # Unsigned for now: an ad-hoc signature only, which Apple Silicon
-          # needs to launch the app at all. Signing with a Developer ID and
-          # notarizing (#14) replaces this with the real identity plus the
-          # APPLE_CERTIFICATE / notarization secrets. Ignored on Windows.
-          APPLE_SIGNING_IDENTITY: '-'
         with:
           releaseId: ${{ needs.draft.outputs.release-id }}
-          args: ${{ matrix.args }}
           # No auto-update in Sendbox, so no latest.json.
           uploadUpdaterJson: false
 
   publish:
     name: Publish release
-    needs: [draft, build]
+    needs: [draft, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Publish the draft release
